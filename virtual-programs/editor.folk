@@ -197,7 +197,45 @@ When /page/ is printing /jobid/ & /page/ has region /r/ {
   Wish to draw text with x $x y $y text  "Printing (jobid: $jobid)" radians [+ $angle 1.55] font NeomatrixCode
 }
 
+
+When /page/ is a keyboard with path /kbPath/ /...anything/ &\
+   /page/ is an editor &\
+   the /kbPath/ cursor is /cursor/ {
+
+  set id "$page$kbPath"
+
+  When $page points up at /target/ & /target/ has program code /runningCode/ {
+
+    Wish $target is labelled "targetting..."
+
+    Hold "cursor$kbPath" {
+      # Claim the $kbPath cursor is [list 0 0 ]
+      Hold "code$kbPath" {
+          # Claim $id has editor code [deleteToBeginning $editorCode $cursor]
+          Claim $id has program code $runningCode
+          Claim $id has editor code $runningCode
+      }
+      lassign $cursor x y
+      Claim the $kbPath cursor is [list 0 $y]
+    }
+  }
+#   On unmatch {
+#     Hold "cursor$kbPath" {
+#       # Claim the $kbPath cursor is [list 0 0 ]
+#       Hold "code$kbPath" {
+#           # Claim $id has editor code [deleteToBeginning $editorCode $cursor]
+#           Claim $id has program code $baseCode
+#           Claim $id has editor code $baseCode
+#       }
+#       lassign $cursor x y
+#       Claim the $kbPath cursor is [list 0 $y]
+#     }
+#   }
+}
+
+
 When /page/ is a keyboard with path /kbPath/ /...anything/ & /page/ is an editor {
+
   set id "$page$kbPath"
 
   Every time keyboard $kbPath claims key /key/ is /keyState/ with /...options/ &\
