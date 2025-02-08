@@ -120,7 +120,7 @@ proc rangeDict {from to val} {
     return $res
 }
 
-proc ::programToPs {id text {format "letter"} {mixins {}}} {
+proc ::programToPs {id text {format "micro"} {mixins {}}} {
     set defaults {
         margin 36
         fontsize 12
@@ -147,6 +147,14 @@ proc ::programToPs {id text {format "letter"} {mixins {}}} {
             maxlines 22
             maxchars 34
             maxcharsOverride {[rangeDict 0 9 0]}
+        }
+        micro {
+            fontsize 6
+            tagsize {100 100}
+            pagesize {395 842}
+            maxlines 43
+            maxchars 120 
+            maxcharsOverride {} 
         }
     }]
     # indexcard (really receipt) assumes fake letter/A4 size:
@@ -327,7 +335,7 @@ When /someone/ wishes to print program /id/ with /...options/ {
     } else {
         puts stderr "print.folk: Couldn't find a matching configured printer; using bare lpr command"
         set args [list]
-        set format letter
+        set format micro
     }
 
     dict set ::printjobs $jobid [list $id $args]
