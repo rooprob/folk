@@ -1,0 +1,11 @@
+Wish $this is titled "Display Shape Slice"
+
+When /someone/ claims /page/ has camera shape slice /slice/ & \
+  $this has region /r/ {
+
+  set angle [region angle $r]
+  set center [region centroid $r ]
+  # set center [region centroid [region move $r down 50%]]
+
+  Wish to draw an image with image $slice scale 1 center $center radians $angle
+}

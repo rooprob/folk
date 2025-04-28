@@ -1,0 +1,9 @@
+Wish $this is titled "Display Count"
+
+# When the blob detection time is /time/ {
+#   Wish $this is labelled $time
+# }
+
+When /someone/ claims /page/ has /count/ counters {
+    Wish $this draws text $count with color gold scale 5.0
+}

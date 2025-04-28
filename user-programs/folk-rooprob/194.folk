@@ -1,0 +1,20 @@
+Wish $this is titled "Detector"
+
+When /someone/ claims /page/ has /count/ counters {
+
+  #When $page has blob with size /size/ center /center/ {
+  #    Wish $this draws a circle with offset $center radius $size color red filled true thickness 1
+  #}
+
+  When the collected matches for [list /someone/ claims $page has blobs /blobs/] are /matches/ {
+    foreach m $matches {
+      set blobs [dict get $m blobs]
+      foreach blob $blobs {
+        set blobSize [dict get $blob size]
+        set blobCenter [dict get $blob center]
+        Wish $this draws a circle with offset $blobCenter radius $blobSize color red filled true thickness 1
+
+      }
+    }
+  }
+}
