@@ -149,12 +149,12 @@ proc ::programToPs {id text {format "micro"} {mixins {}}} {
             maxcharsOverride {[rangeDict 0 9 0]}
         }
         micro {
-            fontsize 6
-            tagsize {100 100}
-            pagesize {395 842}
+            fontsize 9
+            tagsize {105 105}
+            pagesize {595 842}
             maxlines 43
-            maxchars 120 
-            maxcharsOverride {} 
+            maxchars 68
+            maxcharsOverride {}
         }
     }]
     # indexcard (really receipt) assumes fake letter/A4 size:
