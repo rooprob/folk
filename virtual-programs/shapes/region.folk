@@ -12,6 +12,7 @@ When /someone/ wishes /p/ adds region with /...options/ & /p/ has region /r/ {
     color red \
   }
 
+  set options [dict merge $defaults $options]
   set index [dict get $options index]
   set height [dict get $options height]
   set width [dict get $options width]

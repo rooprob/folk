@@ -1,0 +1,404 @@
+# Example program, i.e the public API
+#
+# When /someone/ wishes /page/ captures a /shape/ with /...options/ 
+#
+set ::ringBuffer {}
+namespace eval ::slice {
+
+    proc width {im} { dict get $im width }
+    proc height {im} { dict get $im height }
+
+    namespace export *
+    namespace ensemble create
+
+     set cc [c create]
+     if {$tcl_platform(os) eq "Darwin"} {
+         c loadlib "/opt/homebrew/lib/libjpeg.dylib"
+         c loadlib "/opt/homebrew/lib/libpng.dylib"
+         $cc cflags -I/opt/homebrew/include -L/opt/homebrew/lib
+     } else {
+         c loadlibLd libjpeg.so
+         c loadlibLd libpng
+     }
+ 
+     $cc cflags -ljpeg -lpng
+     $cc cflags -lpng
+     defineImageType $cc
+     $cc include <stdlib.h>
+     $cc include <string.h>
+     $cc include <math.h>
+     $cc include <assert.h>
+     if {[namespace exists ::Heap]} {
+        $cc import ::Heap::cc folkHeapAlloc as folkHeapAlloc
+        $cc import ::Heap::cc folkHeapFree as folkHeapFree
+     } else {
+        $cc code { #define folkHeapAlloc malloc }
+        $cc code { #define folkHeapFree free }
+     }
+
+     $cc code {
+        #include <png.h>
+        #include <stdint.h>
+        #include <unistd.h>
+
+        typedef struct Point Point;
+        struct Point {
+            float x;
+            float y;
+        };
+
+        bool point_in_polygon(Point p, Point *poly, int n) {
+           bool inside = false;
+           for (int i = 0, j = n - 1; i < n; j = i++) {
+             if (((poly[i].y > p.y) != (poly[j].y > p.y)) &&
+               (p.x < (poly[j].x - poly[i].x) * (p.y - poly[i].y) / (double)(poly[j].y - poly[i].y) + poly[i].x))
+               inside = !inside ;
+           }
+           return inside;
+         }
+
+         void compute_bounds(Point *pts, int n, int *x0, int *y0, int *x1, int *y1) {
+           *x0 = *y0 = INT32_MAX;
+           *x1 = *y1 = 0;
+           for (int i = 0; i < n; i ++) {
+             if (pts[i].x < *x0) *x0 = pts[i].x;
+             if (pts[i].y < *y0) *y0 = pts[i].y;
+             if (pts[i].x > *x1) *x1 = pts[i].x;
+             if (pts[i].y > *y1) *y1 = pts[i].y;
+           }
+         }
+
+         void highlight_selection(uint8_t *src, int width, int height, int components, float points[][2], int n_points, int *out_w, int *out_h) {
+
+           int x0, y0, x1, y1;
+
+           Point *polygon = (Point *) points;
+
+           compute_bounds(polygon, n_points, &x0, &y0, &x1, &y1);
+           *out_w = x1 - x0 ;
+           *out_h = y1 - y0 ;
+
+           for (int y = y0; y <= y1; y++) {
+             if (y < 0 || y >= height) continue;
+             for (int x = x0; x <= x1; x++) {
+               if (x < 0 || x >= width) continue;
+               Point p = {x, y};
+               uint8_t *src_px = &src[((y) * (width) + (x)) * components];
+               if (point_in_polygon(p, polygon, n_points)) {
+                   memset(src_px, 255, components);
+               } 
+             }
+           }
+         }
+
+         void mask_selection(uint8_t *src, int width, int height, int components, float points[][2], int n_points, int *out_w, int *out_h) {
+
+           int x0, y0, x1, y1;
+
+           Point *polygon = (Point *) points;
+
+           compute_bounds(polygon, n_points, &x0, &y0, &x1, &y1);
+           *out_w = x1 - x0 ;
+           *out_h = y1 - y0 ;
+
+           for (int y = 0; y < height; y++) {
+             for (int x = 0; x < width; x++) {
+               if (y < y0 && y > y1) continue;
+               if (x < x0 && x > x1) continue;
+
+               Point p = {x, y};
+               if (!point_in_polygon(p, polygon, n_points)) {
+                 uint8_t *src_px = &src[((y) * (width) + (x)) * components];
+                 memset(src_px, 255, components);
+               }
+             }
+           }
+         }
+
+
+         void cut_polygon(uint8_t *src, uint8_t *dst, int width, int height, int components, float points[][2], int n_points, int *out_w, int *out_h) {
+
+           int x0, y0, x1, y1;
+
+           Point *polygon = (Point *) points;
+
+           compute_bounds(polygon, n_points, &x0, &y0, &x1, &y1);
+           *out_w = x1 - x0 ;
+           *out_h = y1 - y0 ;
+
+           //printf("x0 %d,y0 %d x1 %d,y1 %d\n", x0, y0, x1, x1);
+           // printf("out_w: %d, out_h %d\n", *out_w, *out_h);
+           for (int y = y0; y <= y1; y++) {
+             for (int x = x0; x <= x1; x++) {
+               Point p = {x, y};
+               uint8_t *src_px = &src[((y) * (width) + (x)) * components];
+               uint8_t *dst_px = &dst[((y - y0) * (*out_w) + (x - x0)) * components];
+               if ((y < 0 || y >= height) || (x < 0 || x >= width)) {
+                   memset(dst_px, 0, components);
+                   continue;
+               } 
+               if (point_in_polygon(p, polygon, n_points)) {
+                   memcpy (dst_px, src_px, components);
+                   // memset(src_px, 255, components);
+               } else {
+                   memset(dst_px, 0, components);
+                   // memset(src_px, 0, components);
+               }
+             }
+           }
+         }
+     }
+
+     $cc proc freeSlice {image_t im} void {
+        folkHeapFree(im.data);
+     }
+
+     $cc proc cut {image_t im float[][2] points int n_points} image_t {
+
+         int out_w, out_h ;
+
+         // mask_selection(im.data, im.width, im.height, im.components, points, n_points, &out_w, &out_h);
+         // return im ;
+
+         uint8_t* dst = folkHeapAlloc(im.width * im.components * im.height);
+         cut_polygon(im.data, dst, im.width, im.height, im.components, points, n_points, &out_w, &out_h);
+         // printf("---> cut %d, %d\n" , out_w, out_h);
+         // assert(out_w >= 0);
+         // assert(out_h >= 0);
+         // folkHeapFree(im.data);
+
+         return (image_t) {
+             .width = out_w,
+             .height = out_h ,
+             .components = im.components,
+             .bytesPerRow = out_w*im.components,
+             .data = dst
+         };
+     }
+     $cc compile
+}
+
+# From shapes.folk
+set shapes [dict create triangle 3 square 4 pentagon 5 hexagon 6 septagon 7 octagon 8 nonagon 9]
+
+When /someone/ wishes /page/ captures a /shape/ with /...options/ & \
+  /page/ has region /r/ & \
+  /page/ has quad /q/ & \
+  camera /cam/ has intrinsics /cameraIntrinsics/ & \
+  camera /cam/ has width /cameraWidth/ height /cameraHeight/ & \
+  camera /cam/ has frame /f/ at timestamp /timestamp/ & \
+  display /proj/ has width /projWidth/ height /projHeight/ & \
+  display /proj/ has intrinsics /projectorIntrinsics/ {
+
+  # from shapes.folk
+  # The "capture" shape can still be outlined
+  set color [dict_getdef $options color white]
+  set filled [dict_getdef $options filled false]
+  set thickness [dict_getdef $options thickness 10]
+  set layer [dict_getdef $options layer 0]
+  set offset [dict_getdef $options offset {0 0}]
+  
+  # This page's region center and angle.
+  lassign [region centroid $r] cx cy
+  set angle [region angle $r]
+
+  # Create camRegion.
+  # Convert page quad into camera space to create a "cam region"
+  set camQuad [quad change $q $cam]
+  set camVertices [lmap v [quad vertices [quad change $q $cam]] {
+      intrinsics project $cameraIntrinsics \
+          $cameraWidth $cameraHeight $v
+  }]
+
+  # edges from verts
+  set camEdges [list]
+  for {set i 1} {$i <= [llength $camVertices]} {incr i} {
+      lappend camEdges [list [expr {$i - 1}] $i] 
+  }
+  lappend camEdges [list [expr {[llength $camVertices] - 1}] 0]
+  # debug edges
+  # ::loopRegion $camEdges $camVertices 3 blue
+
+  # angle
+  set vecBottom [sub [lindex $camVertices 1] [lindex $camVertices 0]]
+  set camAngle [expr {atan2(-[lindex $vecBottom 1], [lindex $vecBottom 0])}]
+
+  set camRegion [region create $camVertices $camEdges $camAngle]
+
+  lassign [region centroid $camRegion] ccx ccy
+
+  # debug center
+  #Wish to draw a circle with center [list $ccx $ccy] radius 100 thickness 2 \
+  #    color red filled true layer 0 
+
+  set camOffset [process_offset $offset $camRegion]
+  set camCenter [vec2 add [list $ccx $ccy] [vec2 rotate [vec2 scale $camOffset .4] $camAngle]]
+
+  # draw shapes
+  set shapeOffset [process_offset $offset $r]
+  set center [vec2 add [list $cx $cy] [vec2 rotate $shapeOffset $angle]]
+
+  # Wish $this draws a triangle with color skyblue thickness 2 radius 25 offset $shapeOffset
+  set sides 4
+  if {$shape eq "circle"} {
+    set radius [dict_getdef $options radius 50]
+    set sides 25
+    Wish to draw a circle with center $center radius $radius thickness $thickness \
+      color $color filled $filled layer $layer
+      
+  } elseif {$shape eq "rect"} {
+    set w [dict_getdef $options width [region width $r]]
+    set h [dict_getdef $options height [region height $r]]
+    set sides 4
+    
+    Wish to draw a shape with type rect center $center width $w height $h angle $angle \
+      color $color filled $filled thickness $thickness layer $layer
+      
+  } elseif {[dict exists $shapes $shape]} {
+    set radius [dict_getdef $options radius 50]
+    set sides [dict get $shapes $shape]
+
+    Wish to draw a shape with sides [dict get $shapes $shape] center $center radius $radius \
+      angle $angle color $color filled $filled thickness $thickness layer $layer
+      
+  } else {
+    set radius [dict_getdef $options radius 50]
+    set sides [dict get $shapes $shape]
+    Wish $page is labelled "fell through shape: $shape"
+    
+    Wish to draw a shape with sides 4 center $center radius $radius \
+      angle $angle color $color filled $filled thickness $thickness layer $layer
+  }
+
+  # to draw a shape obtains list of vertices
+  set numPoints $sides
+  set points {{0 0}}
+  set centerPoint {0 0}
+  set polyAngle [expr {2 * 3.14159 / $numPoints + 3.14159}]
+  set angleIncr [expr {2 * 3.14159 / $numPoints}]
+    
+  for {set i 0} {$i < $numPoints} {incr i} {
+    set p [vec2 add [lindex $points end] [vec2 scale [list [expr {cos($polyAngle)}] [expr {sin($polyAngle)}]] $radius]]
+    lappend points $p
+    set centerPoint [vec2 add $centerPoint $p]
+    set polyAngle [expr {$polyAngle + $angleIncr}]
+  }
+
+  set points [lmap v $points {
+    vec2 add [vec2 rotate [vec2 sub $v [vec2 scale $centerPoint [expr {1.0/$numPoints}]]] $angle] $camCenter
+  }]
+
+  # convert into ints
+  set newPoints [list]
+  foreach point $points {
+    lassign $point x y 
+    lappend newPoints [list [expr {int($x)}] [expr {int($y)}]]
+  }
+  set points $newPoints
+
+  # create a new image slice from the shape
+  set im [slice cut $f $points [llength $points]]
+
+  # debug
+  # Wish $page displays image $im with scale 2.5
+  
+  # Memory management - TODO improve
+  # Create a per-shape ring buffer
+  if {![dict exists $::ringBuffer $shape]} {
+    set currentList {}
+  } else {
+    set currentList [dict get $::ringBuffer $shape]
+  }
+  if {[llength $currentList] > 10} {
+      set currentList [lassign $currentList oldestFrame]
+     ::slice::freeSlice $oldestFrame
+  }
+  lappend currentList $im 
+  dict set ::ringBuffer $shape $currentList
+
+  Claim $page has camera shape $shape slice $im at timestamp $timestamp
+}
+
+Claim $this has demo {
+  # How to use
+  # When virtual-programs/images/slice.folk has demo /code/ & \
+  #     $this has region /r/ {
+  #     Claim $this has program code $code
+  #     set angle [region angle $r]
+  #     set pos [region bottom $r]
+  #     Wish to draw text with position $pos scale 0.6 text $code radians $angle anchor topright
+  # }
+  #
+  # Center circle
+  Wish $this captures a circle with radius 50
+  
+  # Grid of shapes with varying thickness
+  set baseX -850
+  set baseY -200
+  set gridSpacing 180
+
+  # Row 0: Title
+  Wish $this draws text "triangle" with color skyblue offset [list $baseX [expr {$baseY - ($gridSpacing / 2.0)}]] scale 0.9 
+  Wish $this draws text "square" with color green offset [list [expr {$baseX + $gridSpacing}] [expr {$baseY - ($gridSpacing / 2.0)}]] scale 0.9 
+  Wish $this draws text "pentagon" with color gold offset [list [expr {$baseX + $gridSpacing*2}] [expr {$baseY - ($gridSpacing / 2.0)}]] scale 0.9 
+  Wish $this draws text "hexagon" with color orange offset [list [expr {$baseX + $gridSpacing*3}] [expr {$baseY - ($gridSpacing / 2.0)}]] scale 0.9 
+  
+  # Row 1: Capture output 
+  When $this has region /r/ {
+
+    lassign [region centroid $r] cx cy
+    set pageAngle [region angle $r]
+
+    When the collected matches for [list /someone/ claims /page/ has camera shape /shape/ slice /img/ at timestamp /ts/] are /matches/ {
+      foreach m $matches {
+        set shape [dict get $m shape]
+        set img [dict get $m img]
+        if {$shape == "triangle"} {
+          set offset [list [expr {$baseX}] [expr {$baseY}]]
+        } elseif {$shape == "square"} {
+          set offset [list [expr {$baseX + $gridSpacing}] [expr {$baseY}]]
+        } elseif {$shape == "pentagon"} {
+          set offset [list [expr {$baseX + $gridSpacing * 2}] [expr {$baseY}]]
+        } elseif {$shape == "hexagon"} {
+          set offset [list [expr {$baseX + $gridSpacing * 3}] [expr {$baseY}]]
+        } elseif {$shape == "circle"} {
+          set offset [list [expr {$baseX + $gridSpacing * 2}] [expr {$baseY + $gridSpacing * 3}]]
+        }
+        set offset [::process_offset $offset $r]
+        set center [vec2 add [list $cx $cy] [vec2 rotate $offset $pageAngle]]
+        Wish to draw an image with center $center image $img radians $pageAngle scale 1.0
+      }
+    }
+  }
+  
+  # Row 2: Capture polygons with different shapes 
+  Wish $this captures a "triangle" with color skyblue offset [list $baseX [expr {$baseY + $gridSpacing * 1}]] radius 150
+  Wish $this captures a "square" with color green offset [list [expr {$baseX + $gridSpacing}] [expr {$baseY + $gridSpacing * 1}]] radius 120
+  Wish $this captures a "pentagon" with color gold offset [list [expr {$baseX + $gridSpacing * 2}] [expr {$baseY  + $gridSpacing * 1}]] radius 90
+  Wish $this captures a "hexagon" with color orange offset [list [expr {$baseX + $gridSpacing * 3}] [expr {$baseY + $gridSpacing * 1}]] radius 80
+         
+          
+  When /someone/ claims /page/ has camera shape triangle slice /img/ at timestamp /ts/  & $this has region /r/ & the clock time is /t/ {
+
+    lassign [region centroid $r] cx cy
+    set pageAngle [region angle $r]
+
+    for {set i 0} {$i < 8} {incr i} {
+      set offsetVector [list [sin [+ [- $i $t] $pageAngle]] [* 2 [cos [+ [- $i $t] $pageAngle]]]]
+      set vector [::vec2::scale $offsetVector [+ [* $i $i] 15]]
+      # draw 
+      Wish to draw an image with center $vector image $img radians [expr { $pageAngle + 6.28/0.25 }] scale .75 layer 0
+
+      set offset {50 240}
+      set offset [::process_offset $offset $r]
+      set center [vec2 add [list $cx $cy] [vec2 rotate $offset $pageAngle]]
+      Wish to draw an image with center $center image $img radians [expr { $pageAngle + 6.28/2 }] scale .75 layer 1
+
+      set offset {-50 240}
+      set offset [::process_offset $offset $r]
+      set center [vec2 add [list $cx $cy] [vec2 rotate $offset $pageAngle]]
+      Wish to draw an image with center $center image $img radians [expr { $pageAngle + 6.28/4 }] scale .75 layer 2
+    }
+  }
+}
+

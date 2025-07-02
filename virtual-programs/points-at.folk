@@ -5,18 +5,31 @@ When when /rect/ points /direction/ with length /l/ at /someone/ /lambda/ with e
 
 When when /rect/ points /direction/ at /someone/ /lambda/ with environment /e/ {
   if {[string match "/*" $rect]} { return }
-  Wish $rect points $direction with length 1
+  Wish $rect points $direction with length 1.0
+}
+
+When /someone/ wishes to display whisker with points /points/ to point /point/ status /status/ {
+    set color green
+    if { $status == "on" } {
+        Wish to draw a stroke with points $points color $color width 1 layer 0 
+        Wish to draw a circle with radius 10 thickness 0 color white filled true center $point
+
+    } else {
+        Wish to draw a dashed stroke with points $points color $color width 1 dashlength 10 dashoffset 20 layer 0 
+        Wish to draw a circle with radius 10 thickness 2 color green filled false center $point 
+    }
 }
 
 When /someone/ wishes /rect/ points /direction/ with length /l/ & /rect/ has region /region/ {
 
     set scale $l
-
+ 
     if {$direction eq "up"} {
-        set whiskerRegion [region scale $region width 0.01px height $scale]
+        set whiskerRegion [region scale $region 1%]
         set whiskerRegion [region move $whiskerRegion up \
-                               [vec2 distance [region bottom $whiskerRegion] [region top $region]]px]
-        set color blue
+                               [expr [vec2 distance [region bottom $whiskerRegion] [region top $region]] * 2]px]
+        
+        set color green 
     } elseif {$direction eq "left"} {
         set whiskerRegion [region scale $region height 0.01px width $scale]
         set whiskerRegion [region move $whiskerRegion left \
@@ -34,14 +47,48 @@ When /someone/ wishes /rect/ points /direction/ with length /l/ & /rect/ has reg
         set color white
     }
     set whisker [list $rect whisker $direction]
-    Claim $whisker has region $whiskerRegion
-    Wish $whisker is outlined $color
 
-    When /target/ has region /r2/ {
-        if {$target != $rect && $target != $whisker && \
-                [region intersects $whiskerRegion $r2]} {
-            Claim $rect points $direction at $target
-            Claim $rect points $direction with length $l at $target
+    Claim $whisker has region $whiskerRegion
+    set p1 [region top $region]
+    set p2 [region centroid $whiskerRegion]
+
+    Wish region $whiskerRegion has highlight true with color blue 
+
+    When /nobody/ claims $rect points $direction at /...anything/ {
+        Wish to display whisker with points [list $p1 $p2] to point [region top $whiskerRegion] status off
+    }
+
+    When the collected matches for [list /target/ has region /region/] are /matches/ {
+        foreach m $matches {
+            set target [dict get $m target]
+            set targetRegion [dict get $m region]
+        
+            if {$target == $rect} {
+                continue
+            }
+            if {$target == "${rect} whisker ${direction}"} {
+                continue
+            }
+            if {[region intersects $whiskerRegion $targetRegion]} {
+
+              # debugging
+              Wish region $targetRegion has highlight true with color green
+              Wish region $whiskerRegion has highlight true with color green
+              Wish 202 is labelled "points-at: claiming $rect points '${direction}' at '${target}', with '${whisker}'"
+
+              Wish to display whisker with points [list $p1 $p2] to point [region top $whiskerRegion] status on 
+
+              Claim $rect points $direction at $target
+              Claim $rect points $direction with length $l at $target
+            }
         }
     }
+   #  When /target/ has region /r2/ {
+   #      if {$target != $rect && $target != $whisker && \
+   #          [region intersects $whiskerRegion $r2]} {
+
+   #          Wish region $r2 has highlight true with color green
+
+   #      }
+   #  }
 }

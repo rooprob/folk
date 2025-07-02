@@ -108,6 +108,7 @@ foreach keyboard $keyboardDevices {
                     set activeKeymap $::defaultKeymap
                 }
 
+                # puts "keyboard: type: $type code: $code value: $value"
                 set mods [+ {*}[dict values $modifiers]]
                 lassign [keymap resolve $activeKeymap $code $mods] key keychar
                 if {$key eq ""} { continue }

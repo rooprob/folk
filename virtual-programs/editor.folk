@@ -3,9 +3,9 @@ set baseCode "Wish \$this is outlined green"
 # This makes all keyboards into editors automatically, so a keyboard
 # doesn't need an extra printed claim to be an editor. May choose to
 # change later, or exclude keyboards that opt out.
-When /page/ is a keyboard with path /...anything/ {
-    Claim $page is an editor
-}
+#When /page/ is a keyboard with path /...anything/ {
+#    Claim $page is an editor
+#}
 
 When /page/ is a keyboard with path /kbPath/ /...anything/ &\
   /page/ is an editor &\
@@ -14,6 +14,7 @@ When /page/ is a keyboard with path /kbPath/ /...anything/ &\
   Wish tag $page is stabilized
   set id "$page$kbPath"
   Claim $id has region [region move $r up 210%]
+
   When /nobody/ claims $id has program code /c/ {
     Hold "code$kbPath" {
       Claim $id has program code $baseCode
@@ -317,7 +318,9 @@ When /page/ is a keyboard with path /kbPath/ /...anything/ & /page/ is an editor
               }
               Hold "code$kbPath" {
                 Claim $id has program code $code
-                Claim $id has editor code [deleteCharacter $editorCode $cursor]
+                set newEditorCode [deleteCharacter $editorCode $cursor]
+                Claim $id has editor code $newEditorCode
+                Claim $target has program code $newEditorCode
               }
             }
             Remove {
