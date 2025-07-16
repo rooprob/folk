@@ -8,14 +8,48 @@ proc loopRegion {edges vertices width color} {
     }
     Wish the GPU draws pipeline "line" with instances $instances
 }
+proc loopDashedRegion {edges vertices width color} {
+    set instances [list]
+    set color [getColor $color]
+
+    foreach edge $edges {
+        set from [lindex $vertices [lindex $edge 0]]
+        set to [lindex $vertices [lindex $edge 1]]
+        lappend instances [list $from $to $width $color 10 50]
+    }
+    Wish the GPU draws pipeline "dashed-stroke" with instances $instances
+}
 
 When /someone/ wishes /thing/ is outlined /color/ & /thing/ has region /region/ {
     lassign $region vertices edges
     loopRegion $edges $vertices 3 $color
 }
 
+When /someone/ wishes /thing/ is outlined thin /color/ & /thing/ has region /region/ {
+	# FIXME: assumes path
+	lassign $region vertices edges
+	loopRegion $edges $vertices 1 $color
+}
+
 When /someone/ wishes /thing/ is outlined thick /color/ & /thing/ has region /region/ {
 	# FIXME: assumes path
 	lassign $region vertices edges
 	loopRegion $edges $vertices 6 $color
+}
+
+When /someone/ wishes /thing/ is dashed outlined /color/ & /thing/ has region /region/ {
+    lassign $region vertices edges
+    loopDashedRegion $edges $vertices 3 $color
+}
+
+When /someone/ wishes /thing/ is dashed outlined thin /color/ & /thing/ has region /region/ {
+	# FIXME: assumes path
+	lassign $region vertices edges
+	loopDashedRegion $edges $vertices 1 $color
+}
+
+When /someone/ wishes /thing/ is dashed outlined thick /color/ & /thing/ has region /region/ {
+	# FIXME: assumes path
+	lassign $region vertices edges
+	loopDashedRegion $edges $vertices 6 $color
 }
