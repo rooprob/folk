@@ -1,0 +1,49 @@
+# Folk February Booklet
+# Metadata and structure for the 28-day Folk programming challenge
+
+set this folk-february-booklet
+
+# Booklet metadata
+Claim booklet "folk-february" has title "Folk February: 28 Days of Physical Computing"
+Claim booklet "folk-february" has page count 28
+Claim booklet "folk-february" has format A4
+Claim booklet "folk-february" has author "Your Name"
+
+# Day titles (prompts from Folk February challenge)
+set dayTitles {
+    "Trace"      "Gravity"    "Echo"      "Magnet"
+    "Shadow"     "Bridge"     "Growth"    "Mirror"
+    "Portal"     "Weight"     "Pulse"     "Thread"
+    "Orbit"      "Love"       "Lens"      "Spark"
+    "Wind"       "Clock"      "Ghost"     "Scale"
+    "Fluid"      "Anchor"     "Glow"      "Swarm"
+    "Switch"     "Friction"   "Chorus"    "Memory"
+}
+
+# Define all pages with their prompts
+for {set day 1} {$day <= 28} {incr day} {
+    set prompt [lindex $dayTitles [expr {$day - 1}]]
+
+    Claim booklet "folk-february" has page $day
+    Claim page folk-february-[format %02d $day] has prompt $prompt
+    Claim page folk-february-[format %02d $day] has day $day
+}
+
+# Cover page detection
+When tag folk-february-cover has quad /quad/ {
+    Claim the folk-february cover is visible
+
+    # Show table of contents
+    Wish $quad draws title "Folk February"
+    Wish $quad draws text "28 Days of Physical Computing" with \
+        color white offset {0 0.25} scale 0.8
+
+    # Could show progress, stats, etc.
+    When booklet "folk-february" has read /read/ of /total/ pages {
+        set progressText "Progress: $read / $total pages read"
+        Wish $quad draws text $progressText with \
+            color cyan offset {0 -0.20} scale 0.6
+    }
+}
+
+puts "Folk February booklet metadata loaded"

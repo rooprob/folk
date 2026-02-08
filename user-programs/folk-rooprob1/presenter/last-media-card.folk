@@ -1,0 +1,103 @@
+# Wish $this is titled "Show last media card"
+# 
+# When $this has quad /quad/ &\
+#   the quad library is /quadLib/ &\
+#   the pose library is /poseLib/ &\
+#   display /disp/ has width /displayWidth/ height /displayHeight/ &\
+#   display /disp/ has intrinsics /displayIntrinsics/ &\
+#   the quad changer is /quadChange/ {
+# 
+#   package require linalg
+#   namespace import \
+#     ::math::linearalgebra::add \
+#     ::math::linearalgebra::sub \
+#     ::math::linearalgebra::scale
+# 
+#   fn quadChange
+# 
+#   # Helper functions for geometry calculations
+#   proc calculateQuadCenter {quadLib quad} {
+#     lassign [$quadLib vertices $quad] topLeft topRight bottomRight bottomLeft
+#     set topCenter [scale 0.5 [add $topLeft $topRight]]
+#     set bottomCenter [scale 0.5 [add $bottomLeft $bottomRight]]
+#     return [scale 0.5 [add $topCenter $bottomCenter]]
+#   }
+# 
+#   proc projectToDisplay {poseLib displayIntrinsics displayWidth displayHeight point} {
+#     return [$poseLib project $displayIntrinsics $displayWidth $displayHeight $point]
+#   }
+# 
+#   proc findClosestCard {cardDistancePairs} {
+#     if {[llength $cardDistancePairs] == 0} {
+#       return {}
+#     }
+# 
+#     set keyValueList {}
+#     dict for {key value} $cardDistancePairs {
+#         lappend keyValueList [list $key $value]
+#     }
+#     set sortedList [lsort -real -index 1 $keyValueList]
+# 
+#     set firstKeyValuePair [lindex $sortedList 0]
+# 
+#     return $firstKeyValuePair
+#   }
+# 
+#   set quad [quadChange $quad "display $disp"]
+#   set centerCenter [calculateQuadCenter $quadLib $quad]
+#   set to [projectToDisplay $poseLib $displayIntrinsics $displayWidth $displayHeight $centerCenter]
+# 
+#   set pairs [dict create] 
+#   ForEach! /card/ is a mediacard with /...options/ &\
+#       /card/ has quad /cardQuad/ {
+#       set cardQuad [quadChange $cardQuad "display $disp"]
+#       set ccenterCenter [calculateQuadCenter $quadLib $cardQuad]
+#       set from [projectToDisplay $poseLib $displayIntrinsics $displayWidth $displayHeight $ccenterCenter]
+# 
+#       Wish to draw a line onto $disp with points [list $from $to] width 0.01 color yellow layer -1
+# 
+#       set distance [::vec2::distance $from $to]
+#       dict set pairs $card $distance
+# 
+#       # puts "Wish $this is labelled found media card: $card, dist $distance"
+#       # Wish $this is labelled "found media card: $card, dist $distance"
+#       Claim $this sees mediacard $card with distance $distance
+#   }
+#   lassign [findClosestCard $pairs] closest distance
+#   #Claim $this is closest to card $closest at distance $distance
+# 
+#   When $this is closest to card /card/ at distance /distance/ &\
+#     $this has resolved geometry /geom/ &\
+#     /card/ is a mediacard with image /im/ at timestamp /ts/ {
+# 
+#     Wish $this is labelled "Closest to $this is $card at $ts"
+# 
+#     set page_width [dict get $geom width]
+#     set page_height [dict get $geom height]
+#     set page_center [list [/ $page_width 2] [/ [/ $page_height 3] 1.5]]
+# 
+#     Wish (keep 40ms) to draw an image onto $this with position $page_center image $im anchor center width 0.09
+# 
+#     Wish "folk-rooprob1" streams image $im
+#   }
+# #     
+# #   When the collected results for [list /someone/ claims /page/ sees mediacard /card/ with distance /dist/] are /results/ {
+# #     set pairs {}
+# #     foreach match $results {
+# #       set card [dict get $match card]
+# #       set dist [dict get $match dist]
+# #       lappend pairs [list $dist $card]
+# #     }
+# #     
+# #     if {[llength $pairs] > 0} {
+# #       # Wish $this is labelled "closest: $closest"
+# #       lassign $closest card distance
+# #       
+# #       # puts "Closest card is $card"
+# #       
+# #       # Wish $this is labelled "closest: $card"
+# #       #Hold! -key closest -keep 40ms \
+# #         Claim $this is closest to card $card at distance $distance
+# #     }
+# #   }
+# }

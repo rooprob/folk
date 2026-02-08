@@ -1,0 +1,205 @@
+# table-plane.folk
+# Coordinate system for tags on a 2D planar surface
+#
+# Usage:
+#   Claim tag 42 defines plane coordinates
+# Or:
+#   Wish to use tag 0 as plane origin
+#
+# This provides:
+#   - Claim tag X has plane position {x y}  (in meters from origin)
+#   - Claim the plane to screen converter is $fn
+
+set this table-plane
+
+# Handle wish to use a tag as plane origin
+When /someone/ wishes to use tag /tagId/ as plane origin {
+    Claim tag $tagId defines plane coordinates
+}
+
+# When a tag defines the coordinate system
+When tag /tagId/ defines plane coordinates &\
+     tag /tagId/ has quad /quad/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     display /disp/ has width /something/ height /something/ {
+
+    # Transform quad from camera space to display space
+    fn quadChange
+    set displayQuad [quadChange $quad "display $disp"]
+    lassign [$quadLib vertices $displayQuad] tl tr br bl
+
+    # Define plane origin at tag center
+    set origin [list \
+        [expr {([lindex $tl 0] + [lindex $br 0]) / 2.0}] \
+        [expr {([lindex $tl 1] + [lindex $br 1]) / 2.0}] \
+        [expr {([lindex $tl 2] + [lindex $br 2]) / 2.0}]]
+
+    # Define plane axes from tag orientation
+    # X-axis: left edge to right edge (top-left to top-right)
+    set topRight_sub_topLeft [list \
+        [expr {[lindex $tr 0] - [lindex $tl 0]}] \
+        [expr {[lindex $tr 1] - [lindex $tl 1]}] \
+        [expr {[lindex $tr 2] - [lindex $tl 2]}]]
+    set xAxisLen [expr {sqrt(pow([lindex $topRight_sub_topLeft 0], 2) + \
+                              pow([lindex $topRight_sub_topLeft 1], 2) + \
+                              pow([lindex $topRight_sub_topLeft 2], 2))}]
+    set xAxis [list \
+        [expr {[lindex $topRight_sub_topLeft 0] / $xAxisLen}] \
+        [expr {[lindex $topRight_sub_topLeft 1] / $xAxisLen}] \
+        [expr {[lindex $topRight_sub_topLeft 2] / $xAxisLen}]]
+
+    # Y-axis: top edge to bottom edge (top-left to bottom-left)
+    set bottomLeft_sub_topLeft [list \
+        [expr {[lindex $bl 0] - [lindex $tl 0]}] \
+        [expr {[lindex $bl 1] - [lindex $tl 1]}] \
+        [expr {[lindex $bl 2] - [lindex $tl 2]}]]
+    set yAxisLen [expr {sqrt(pow([lindex $bottomLeft_sub_topLeft 0], 2) + \
+                              pow([lindex $bottomLeft_sub_topLeft 1], 2) + \
+                              pow([lindex $bottomLeft_sub_topLeft 2], 2))}]
+    set yAxis [list \
+        [expr {[lindex $bottomLeft_sub_topLeft 0] / $yAxisLen}] \
+        [expr {[lindex $bottomLeft_sub_topLeft 1] / $yAxisLen}] \
+        [expr {[lindex $bottomLeft_sub_topLeft 2] / $yAxisLen}]]
+
+    # CLAIM the plane exists
+    Claim the plane origin is $origin
+    Claim the plane has x axis $xAxis
+    Claim the plane has y axis $yAxis
+    Claim the plane is defined
+
+    # Visual feedback - origin tag gets special outline
+    Wish $tagId is outlined red 
+}
+
+# Compute plane coordinates for all tags
+When the plane is defined &\
+     the plane origin is /origin/ &\
+     the plane has x axis /xAxis/ &\
+     the plane has y axis /yAxis/ &\
+     tag /tagId/ has quad /quad/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     display /disp/ has width /something/ height /something/ {
+
+    # Transform quad from camera space to display space
+    fn quadChange
+    set displayQuad [quadChange $quad "display $disp"]
+    lassign [$quadLib vertices $displayQuad] tl tr br bl
+    set tagPos [list \
+        [expr {([lindex $tl 0] + [lindex $br 0]) / 2.0}] \
+        [expr {([lindex $tl 1] + [lindex $br 1]) / 2.0}] \
+        [expr {([lindex $tl 2] + [lindex $br 2]) / 2.0}]]
+
+    # Vector from origin to tag
+    set relPos [list \
+        [expr {[lindex $tagPos 0] - [lindex $origin 0]}] \
+        [expr {[lindex $tagPos 1] - [lindex $origin 1]}] \
+        [expr {[lindex $tagPos 2] - [lindex $origin 2]}]]
+
+    # Project onto plane axes (dot product)
+    set planeX [expr {[lindex $relPos 0] * [lindex $xAxis 0] + \
+                      [lindex $relPos 1] * [lindex $xAxis 1] + \
+                      [lindex $relPos 2] * [lindex $xAxis 2]}]
+    set planeY [expr {[lindex $relPos 0] * [lindex $yAxis 0] + \
+                      [lindex $relPos 1] * [lindex $yAxis 1] + \
+                      [lindex $relPos 2] * [lindex $yAxis 2]}]
+
+    # CLAIM plane coordinates (in meters)
+    Claim tag $tagId has plane position [list $planeX $planeY]
+
+}
+
+# Provide plane-to-screen converter function with bounds checking
+# Usage:
+#   set screenPos [{*}$toScreen $x $y]           # Clamped to display bounds
+#   set screenPos [{*}$toScreen $x $y false]     # No clamping
+#   if {[{*}$isOnScreen $x $y]} { ... }          # Check if in bounds
+When the plane is defined &\
+     the plane origin is /origin/ &\
+     the plane has x axis /xAxis/ &\
+     the plane has y axis /yAxis/ &\
+     display /disp/ has intrinsics /intrinsics/ &\
+     display /disp/ has width /w/ height /h/ &\
+     the pose library is /poseLib/ {
+
+    fn planeToScreen {planeX planeY {clamp true}} {
+        # Convert plane coords to 3D world position
+        # worldPos = origin + (xAxis * planeX) + (yAxis * planeY)
+        set offsetX [list \
+            [expr {[lindex $xAxis 0] * $planeX}] \
+            [expr {[lindex $xAxis 1] * $planeX}] \
+            [expr {[lindex $xAxis 2] * $planeX}]]
+        set offsetY [list \
+            [expr {[lindex $yAxis 0] * $planeY}] \
+            [expr {[lindex $yAxis 1] * $planeY}] \
+            [expr {[lindex $yAxis 2] * $planeY}]]
+        set worldPos [list \
+            [expr {[lindex $origin 0] + [lindex $offsetX 0] + [lindex $offsetY 0]}] \
+            [expr {[lindex $origin 1] + [lindex $offsetX 1] + [lindex $offsetY 1]}] \
+            [expr {[lindex $origin 2] + [lindex $offsetX 2] + [lindex $offsetY 2]}]]
+
+        # Project to screen
+        set screenPos [$poseLib project $intrinsics $w $h $worldPos]
+        lassign $screenPos sx sy
+
+        # Clamp to display bounds if requested
+        if {$clamp} {
+            if {$sx < 0} { set sx 0 }
+            if {$sx > $w} { set sx $w }
+            if {$sy < 0} { set sy 0 }
+            if {$sy > $h} { set sy $h }
+        }
+
+        return [list $sx $sy]
+    }
+
+    set planeToScreen [fn planeToScreen]
+    Claim the plane to screen converter is $planeToScreen
+
+    # Also provide bounds-checking helper
+    fn isOnScreen {planeX planeY} {
+        set screenPos [planeToScreen $planeX $planeY false]
+        lassign $screenPos sx sy
+        return [expr {$sx >= 0 && $sx <= $w && $sy >= 0 && $sy <= $h}]
+    }
+
+    set isOnScreen [fn isOnScreen]
+    Claim the plane bounds checker is $isOnScreen
+}
+
+# Compute distance between two specific tags on demand
+# Usage: When tag X has distance /d/ to tag Y { ... }
+# Only fires when someone asks for a specific pair
+When /someone/ wishes to know distance from tag /tagA/ to tag /tagB/ &\
+     tag /tagA/ has plane position /posA/ &\
+     tag /tagB/ has plane position /posB/ {
+
+    lassign $posA ax ay
+    lassign $posB bx by
+
+    set dx [expr {$bx - $ax}]
+    set dy [expr {$by - $ay}]
+    set distance [expr {sqrt($dx * $dx + $dy * $dy)}]
+
+    Claim tag $tagA has distance $distance to tag $tagB
+    Claim tag $tagB has distance $distance to tag $tagA
+}
+
+# Provide distance computation helper
+When the plane is defined {
+    fn planeDistance {pos1 pos2} {
+        lassign $pos1 x1 y1
+        lassign $pos2 x2 y2
+        set dx [expr {$x2 - $x1}]
+        set dy [expr {$y2 - $y1}]
+        return [expr {sqrt($dx * $dx + $dy * $dy)}]
+    }
+
+    set planeDistance [fn planeDistance]
+    Claim the plane distance calculator is $planeDistance
+}
+
+# Debug section removed — 7 Wish to draw text onto $disp per tick
+# overflows work queue. Uncomment temporarily for diagnostics only.
+

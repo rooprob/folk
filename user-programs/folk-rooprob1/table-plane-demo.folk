@@ -1,0 +1,92 @@
+# table-plane-demo.folk
+# Demonstrates using the table-plane coordinate system
+#
+# Setup:
+#   1. Place a tag on table to be the origin
+#   2. Run: Claim tag <id> defines plane coordinates
+#   3. Place other tags and watch them get plane coordinates
+#   4. This demo draws a grid to visualize the coordinate system
+
+set this table-plane-demo
+
+# Example: Use tag 0 as the origin (change to your tag ID)
+# Uncomment one of these:
+# Claim tag 0 defines plane coordinates
+# Wish to use tag 42 as plane origin
+
+# Draw a coordinate grid on the display to visualize plane space
+When /someone/ claims the plane is defined &\
+     /someone/ claims the plane to screen converter is /toScreen/ &\
+     /someone/ wishes /tagId/ to draw table-plane-demo &\
+     display /disp/ has width /w/ height /h/ {
+
+    # Draw grid lines every 10cm, with deadzone around origin tag
+    set gridSpacing 0.1  ;# meters
+    set deadzone 0.05    ;# 5cm clearance around origin for tag visibility
+
+    # Draw X-axis grid lines (vertical lines)
+    for {set x -1.0} {$x <= 1.0} {set x [expr {$x + $gridSpacing}]} {
+        set color [expr {abs($x) < 0.01 ? "red" : "gray"}]
+        set width [expr {abs($x) < 0.01 ? 2 : 1}]
+
+        # Skip lines too close to origin (within deadzone of both axes)
+        if {abs($x) < $deadzone} {
+            # Split into two segments, skipping the tag area
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen $x -1.0] [{*}$toScreen $x [expr {-$deadzone}]]] \
+                width $width color $color
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen $x $deadzone] [{*}$toScreen $x 1.0]] \
+                width $width color $color
+        } else {
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen $x -1.0] [{*}$toScreen $x 1.0]] \
+                width $width color $color
+        }
+    }
+
+    # Draw Y-axis grid lines (horizontal lines)
+    for {set y -1.0} {$y <= 1.0} {set y [expr {$y + $gridSpacing}]} {
+        set color [expr {abs($y) < 0.01 ? "green" : "gray"}]
+        set width [expr {abs($y) < 0.01 ? 2 : 1}]
+
+        if {abs($y) < $deadzone} {
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen -1.0 $y] [{*}$toScreen [expr {-$deadzone}] $y]] \
+                width $width color $color
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen $deadzone $y] [{*}$toScreen 1.0 $y]] \
+                width $width color $color
+        } else {
+            Wish to draw a line onto $disp with \
+                points [list [{*}$toScreen -1.0 $y] [{*}$toScreen 1.0 $y]] \
+                width $width color $color
+        }
+    }
+}
+
+# Example: Draw circles at specific plane coordinates
+When the plane to screen converter is /toScreen/ &\
+     /someone/ wishes /tagId/ to draw table-plane-demo &\
+     display /disp/ has width /w/ height /h/ {
+
+    # Mark some interesting points
+    # Skip origin (0,0) to avoid obscuring the AprilTag
+    set points [list \
+        [list 0.2 0.0 "20cm X" orange] \
+        [list 0.0 0.2 "20cm Y" yellow] \
+        [list 0.2 0.2 "Corner" cyan]]
+
+    foreach point $points {
+        lassign $point px py label color
+        set screenPos [{*}$toScreen $px $py]
+
+        Wish to draw a circle onto $disp with \
+            center $screenPos \
+            radius 5 \
+            thickness 2 \
+            color $color \
+            filled true
+    }
+}
+

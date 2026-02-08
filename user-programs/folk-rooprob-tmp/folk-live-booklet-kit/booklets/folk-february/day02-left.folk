@@ -1,0 +1,79 @@
+# Day 02: Gravity - Left Page (Annotated Code)
+# Shows how particle physics works in Folk
+
+When page folk-february-02-L is visible &\
+     page folk-february-02-L has quad /page/ {
+
+    # Page title
+    Wish $page draws title "Day 02: GRAVITY"
+
+    # Introduction
+    Wish $page draws text "Particle emitters with physics simulation" with \
+        color white offset {0 0.32} scale 0.5
+
+    # STEP 1: Spawn Particles
+    Wish $page shows step 1 at 0.22 with \
+        code {
+When tag /tagId/ has gravity enabled {
+    every 250ms {
+        # Get tag position
+        set screenPos [getScreenPosition $tagId]
+
+        # Random velocity
+        set vx [expr {(rand() - 0.5) * 200}]
+        set vy [expr {-300 - rand() * 100}]
+
+        # Create ball
+        Claim ball $id has position $screenPos
+        Claim ball $id has velocity [list $vx $vy]
+    }
+}
+        } \
+        title "Spawn Particles" \
+        explanation "Emit balls every 250ms from tag position"
+
+    # STEP 2: Physics Update
+    Wish $page shows step 2 at 0.04 with \
+        code {
+When ball /id/ has position /pos/ velocity /vel/ {
+    lassign $vel vx vy
+
+    # Apply gravity
+    set vy [expr {$vy + 600 * 0.016}]
+
+    # Update position
+    set x [expr {$x + $vx * 0.016}]
+    set y [expr {$y + $vy * 0.016}]
+
+    Claim ball $id has position [list $x $y]
+    Claim ball $id has velocity [list $vx $vy]
+}
+        } \
+        title "Apply Physics" \
+        explanation "Gravity accelerates balls downward"
+
+    # STEP 3: Render
+    Wish $page shows step 3 at -0.15 with \
+        code {
+When ball /id/ has position /pos/ color /color/ {
+    Wish to draw a circle onto $disp with \
+        center $pos radius 10 color $color \
+        filled true
+}
+        } \
+        title "Render Particles" \
+        explanation "Draw each ball at its current position"
+
+    # Key concepts
+    Wish $page draws text "Observable Computation:" with \
+        color yellow offset {-0.30 -0.32} scale 0.5
+
+    Wish $page draws text "Each physics step is a Claim" with \
+        color white offset {-0.30 -0.35} scale 0.4
+
+    Wish $page draws text "Anyone can observe ball positions" with \
+        color white offset {-0.30 -0.38} scale 0.4
+
+    # Page number
+    Wish $page draws page number 2
+}

@@ -1,0 +1,120 @@
+# # table-plane-distance-demo.folk
+# # Visualizes distances and proximity relationships between tags
+# #
+# # Shows:
+# #   - Lines connecting nearby tags
+# #   - Distance labels
+# #   - Color-coded proximity (red=touching, yellow=near, green=visible)
+# #
+# # Setup:
+# #   1. Load table-plane.folk
+# #   2. Claim tag <id> defines plane coordinates
+# #   3. Place multiple tags on the table
+# 
+# set this table-plane-distance-demo
+# 
+# # Draw lines between nearby tags with distance labels
+# When tag /tagA/ has distance /dist/ to tag /tagB/ &\
+#      tag /tagA/ has plane position /posA/ &\
+#      tag /tagB/ has plane position /posB/ &\
+#      the plane to screen converter is /toScreen/ &\
+#      display /disp/ has width /dispW/ height /dispH/ &\
+#      /tagA/ < /tagB/ {  # Only draw once per pair (avoid duplicates)
+# 
+#     # Only draw if tags are within visible range (50cm)
+#     if {$dist > 0.50} {
+#         return
+#     }
+# 
+#     # Convert to screen coordinates
+#     set screenA [{*}$toScreen {*}$posA]
+#     set screenB [{*}$toScreen {*}$posB]
+# 
+#     # Color code by proximity
+#     if {$dist < 0.05} {
+#         set color red
+#         set width 4
+#         set label "TOUCHING"
+#     } elseif {$dist < 0.15} {
+#         set color yellow
+#         set width 3
+#         set label "NEAR"
+#     } else {
+#         set color green
+#         set width 2
+#         set label "visible"
+#     }
+# 
+#     # Draw line between tags
+#     Wish to draw a line onto $disp with \
+#         points [list $screenA $screenB] \
+#         width $width \
+#         color $color
+# 
+#     # Calculate midpoint for distance label
+#     lassign $screenA ax ay
+#     lassign $screenB bx by
+#     set midX [expr {($ax + $bx) / 2.0}]
+#     set midY [expr {($ay + $by) / 2.0}]
+# 
+#     # Format distance text
+#     set distCm [expr {$dist * 100.0}]
+#     set distText [format "%s\n%.1fcm" $label $distCm]
+# 
+#     # Draw distance label at midpoint
+#     Wish to draw text onto $disp with \
+#         position [list $midX $midY] \
+#         text $distText \
+#         scale 24 \
+#         color $color \
+#         anchor center
+# }
+# 
+# # Show distance info on each tag
+# When tag /tagId/ has plane position /pos/ &\
+#      tag /tagId/ has distance /dist/ to tag /otherId/ {
+# 
+#     # Count nearby tags
+#     set nearbyCount 0
+#     set touchingCount 0
+# 
+#     # Query all distances from this tag
+#     foreach result [Query! $tagId has distance /d/ to tag /other/] {
+#         set d [dict get $result d]
+#         if {$d < 0.15} {
+#             incr nearbyCount
+#         }
+#         if {$d < 0.05} {
+#             incr touchingCount
+#         }
+#     }
+# 
+#     if {$nearbyCount > 0} {
+#         set statusText "Nearby: $nearbyCount"
+#         if {$touchingCount > 0} {
+#             append statusText "\nTouching: $touchingCount"
+#         }
+# 
+#         Wish $tagId draws text $statusText with color white offset {0 0.08} scale 0.6
+#     }
+# }
+# 
+# # Example usage patterns for other programs:
+# 
+# # When tag /a/ is touching tag /b/ {
+# #     puts "Tags $a and $b are touching!"
+# # }
+# 
+# # When tag /a/ is near tag /b/ {
+# #     puts "Tags $a and $b are near each other"
+# # }
+# 
+# # When tag /a/ has distance /d/ to tag /b/ & /d/ < 0.10 {
+# #     puts "Tags $a and $b are less than 10cm apart"
+# # }
+# 
+# # When tag 42 is touching tag 99 {
+# #     # Trigger something when specific tags touch
+# #     Wish $display shows "Special combination!"
+# # }
+# 

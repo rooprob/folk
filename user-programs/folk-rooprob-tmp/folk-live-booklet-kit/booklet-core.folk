@@ -1,0 +1,126 @@
+# booklet-core.folk
+# Core infrastructure for Folk Live Booklets
+# Handles page detection, spread tracking, and observable state
+
+set this booklet-core
+
+# Resolve physical tag IDs to logical page names
+# Uses mappings from tag-mappings.folk
+# This makes booklets portable across installations!
+
+When tag /tagId/ has quad /quad/ &\
+     tag /tagId/ is page /pageName/ {
+
+    # Parse logical page name
+    # Pattern: [booklet-name]-[page-number]-[L|R]
+    # Example: folk-february-01-L
+    if {[regexp {^(.+)-(\d+)-(L|R)$} $pageName -> booklet page side]} {
+        # CLAIM observable page state
+        Claim page $pageName is visible
+        Claim page $pageName belongs to booklet $booklet
+        Claim page $pageName is page $page side $side
+        Claim page $pageName has physical tag $tagId
+
+        # Track current booklet and page
+        Claim the current booklet is $booklet
+        Claim the current page number is $page
+
+        # Visual feedback
+        Wish $tagId is outlined white
+    }
+}
+
+# Support both mapped tags AND direct page names (for flexibility)
+# If a tag ID directly matches the page pattern, use it directly
+When tag /tagId/ has quad /quad/ &\
+     tag /tagId/ is /nobody/ page /anything/ {
+
+    # No mapping exists, check if tag ID itself is a page name
+    if {[regexp {^(.+)-(\d+)-(L|R)$} $tagId -> booklet page side]} {
+        # CLAIM observable page state
+        Claim page $tagId is visible
+        Claim page $tagId belongs to booklet $booklet
+        Claim page $tagId is page $page side $side
+        Claim page $tagId has physical tag $tagId
+
+        # Track current booklet and page
+        Claim the current booklet is $booklet
+        Claim the current page number is $page
+
+        # Visual feedback
+        Wish $tagId is outlined white
+    }
+}
+
+# Detect when both sides of a spread are visible
+When page /leftId/ is page /pageNum/ side L &\
+     page /rightId/ is page /pageNum/ side R &\
+     page /leftId/ belongs to booklet /booklet/ &\
+     page /rightId/ belongs to booklet /booklet/ &\
+     page /leftId/ is visible &\
+     page /rightId/ is visible {
+
+    # CLAIM the spread is open
+    Claim spread $booklet-$pageNum is open
+    Claim spread $booklet-$pageNum has left page $leftId
+    Claim spread $booklet-$pageNum has right page $rightId
+
+    puts "Booklet: Spread $booklet-$pageNum is open"
+}
+
+# Track reading history
+When page /pageId/ is visible {
+    set now [clock seconds]
+
+    # Record when this page was first seen
+    set history [Query! page $pageId was first read at /time/]
+    if {[llength $history] == 0} {
+        Claim page $pageId was first read at $now
+        puts "Booklet: First time reading $pageId"
+    }
+
+    # Update last-read timestamp
+    Hold! -keep 1000ms -key [list page-read $pageId] \
+        Claim page $pageId was last read at $now
+}
+
+# Compute booklet statistics
+When the current booklet is /booklet/ {
+    # Count how many pages have been read
+    set totalPages [llength [Query! page /p/ belongs to booklet $booklet]]
+    set readPages [llength [Query! page /p/ was first read at /t/ & \
+                                   page /p/ belongs to booklet $booklet]]
+
+    if {$totalPages > 0} {
+        set progress [expr {100.0 * $readPages / $totalPages}]
+        Claim booklet $booklet has progress $progress percent
+        Claim booklet $booklet has read $readPages of $totalPages pages
+    }
+}
+
+# Navigation helpers
+When the current page number is /pageNum/ &\
+     the current booklet is /booklet/ {
+
+    set prevPage [expr {$pageNum - 1}]
+    set nextPage [expr {$pageNum + 1}]
+
+    if {$prevPage >= 1} {
+        Claim the previous page is $booklet-$prevPage
+    }
+
+    # Note: Max page count should come from booklet metadata
+    Claim the next page is $booklet-$nextPage
+}
+
+# Debug: Show booklet status
+When the current booklet is /booklet/ &\
+     the current page number is /page/ {
+    set now [clock milliseconds]
+
+    # Throttle debug output
+    if {![info exists ::lastBookletDebug] || $now - $::lastBookletDebug > 2000} {
+        puts "Booklet: Currently viewing $booklet page $page"
+        set ::lastBookletDebug $now
+    }
+}

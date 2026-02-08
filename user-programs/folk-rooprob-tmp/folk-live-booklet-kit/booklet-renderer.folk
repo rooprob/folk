@@ -1,0 +1,173 @@
+# booklet-renderer.folk
+# Rendering utilities for Folk Live Booklets
+# Provides syntax highlighting, step displays, and layout helpers
+
+set this booklet-renderer
+
+# Syntax highlighting for Folk code
+# Highlights keywords, patterns, and special constructs
+
+fn highlightFolkCode {code} {
+    # Keywords to highlight
+    set keywords {Claim When Wish Hold! Query! Subscribe: On}
+    set patterns {/\w+/}  ;# Pattern variables
+
+    # Simple tokenization (could be more sophisticated)
+    # Returns list of {type text} pairs
+
+    set result {}
+    set lines [split $code "\n"]
+
+    foreach line $lines {
+        set tokens {}
+
+        # Check for keywords
+        foreach keyword $keywords {
+            if {[string match "*$keyword*" $line]} {
+                # Highlight this keyword
+                lappend tokens [list keyword $keyword]
+            }
+        }
+
+        # Check for pattern variables
+        if {[regexp {/\w+/} $line pattern]} {
+            lappend tokens [list pattern $pattern]
+        }
+
+        lappend result $line $tokens
+    }
+
+    return $result
+}
+
+# Draw a code block with syntax highlighting
+When /someone/ wishes /page/ draws code /code/ at /pos/ with highlight /highlight/ {
+    # Split code into lines
+    set lines [split $code "\n"]
+    set y [lindex $pos 1]
+    set lineHeight 0.02  ;# meters
+
+    foreach line $lines {
+        # Base color for code
+        set color white
+
+        # Check if this line contains the highlighted term
+        if {$highlight ne "" && [string match "*$highlight*" $line]} {
+            set color yellow
+            # Draw highlight background box
+            Wish $page draws rect at [list [lindex $pos 0] $y] \
+                width 0.4 height $lineHeight color {1 1 0 0.3} filled true
+        }
+
+        # Draw the line
+        Wish $page draws text $line with \
+            color $color \
+            offset [list [lindex $pos 0] $y] \
+            scale 0.4 \
+            anchor left
+
+        set y [expr {$y - $lineHeight}]
+    }
+}
+
+# Draw a step section (number + title + code + explanation)
+When /someone/ wishes /page/ shows step /stepNum/ at /yPos/ \
+     with code /code/ title /title/ explanation /explanation/ {
+
+    set leftX -0.35
+    set codeX -0.30
+
+    # Step number circle
+    Wish $page draws circle with \
+        center [list $leftX $yPos] \
+        radius 0.015 \
+        color yellow \
+        filled true
+
+    Wish $page draws text "$stepNum" with \
+        color black \
+        offset [list $leftX $yPos] \
+        scale 0.5 \
+        anchor center
+
+    # Step title
+    Wish $page draws text $title with \
+        color yellow \
+        offset [list [expr {$leftX + 0.03}] $yPos] \
+        scale 0.6 \
+        anchor left
+
+    # Code block (indented)
+    set codeY [expr {$yPos - 0.03}]
+    Wish $page draws code $code at [list $codeX $codeY]
+
+    # Explanation text
+    set explainY [expr {$codeY - 0.04}]
+    Wish $page draws text "💡 $explanation" with \
+        color cyan \
+        offset [list $codeX $explainY] \
+        scale 0.4 \
+        anchor left
+}
+
+# Draw page title
+When /someone/ wishes /page/ draws title /title/ {
+    Wish $page draws text $title with \
+        color white \
+        offset {0 0.38} \
+        scale 1.2 \
+        anchor center
+}
+
+# Draw page number
+When /someone/ wishes /page/ draws page number /num/ {
+    Wish $page draws text "Page $num" with \
+        color gray \
+        offset {0 -0.42} \
+        scale 0.5 \
+        anchor center
+}
+
+# Draw navigation hints
+When page /pageId/ is page /pageNum/ side L &\
+     the previous page is /prevPage/ {
+
+    Wish $pageId draws text "← Previous" with \
+        color gray \
+        offset {-0.35 -0.40} \
+        scale 0.4 \
+        anchor left
+}
+
+When page /pageId/ is page /pageNum/ side R &\
+     the next page is /nextPage/ {
+
+    Wish $pageId draws text "Next →" with \
+        color gray \
+        offset {0.35 -0.40} \
+        scale 0.4 \
+        anchor right
+}
+
+# Observable state visualization
+When /someone/ wishes /page/ shows observable state /stateText/ at /pos/ {
+    # Draw a "database view" showing current claims
+    Wish $page draws rect at $pos \
+        width 0.35 height 0.08 \
+        color {0.2 0.2 0.8 0.5} \
+        filled true
+
+    Wish $page draws text "Observable State:" with \
+        color cyan \
+        offset [list [lindex $pos 0] [expr {[lindex $pos 1] + 0.03}]] \
+        scale 0.4 \
+        anchor center
+
+    Wish $page draws text $stateText with \
+        color white \
+        offset $pos \
+        scale 0.35 \
+        anchor center
+}
+
+puts "Booklet renderer loaded"

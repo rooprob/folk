@@ -1,0 +1,74 @@
+# Day 01: Trace - Left Page (Annotated Code)
+# Shows step-by-step breakdown of how the trace program works
+
+When page folk-february-01-L is visible &\
+     page folk-february-01-L has quad /page/ {
+
+    # Page title
+    Wish $page draws title "Day 01: TRACE"
+
+    # Introduction text
+    Wish $page draws text "Rainbow trails that follow physical tags" with \
+        color white offset {0 0.32} scale 0.5
+
+    # STEP 1: Tag Detection and Enablement
+    Wish $page shows step 1 at 0.22 with \
+        code {
+When /someone/ wishes all tags have trace enabled {
+    When tag /tagId/ has quad /quad/ {
+        Claim $tagId has trace enabled
+    }
+}
+        } \
+        title "Enable Tracing" \
+        explanation "Tags opt-in to being traced"
+
+    # STEP 2: Store Historical Positions
+    Wish $page shows step 2 at 0.05 with \
+        code {
+When tag /tagId/ has trace enabled &\
+     tag /tagId/ has quad /quad/ {
+
+    # Build history list
+    set trail [...]
+    lappend trail [list $now $quad $color]
+
+    Hold! -keep 5000ms \
+        Claim $tagId has trail $trail
+}
+        } \
+        title "Store Trail History" \
+        explanation "Keep 5 seconds of position history"
+
+    # STEP 3: Render the Trail
+    Wish $page shows step 3 at -0.14 with \
+        code {
+When tag /tagId/ has trail /trail/ {
+    foreach entry $trail {
+        lassign $entry timestamp quad color
+
+        # Transform and draw
+        set displayQuad [quadChange $quad ...]
+        Wish to draw line with points $vertices
+    }
+}
+        } \
+        title "Draw Rainbow Trail" \
+        explanation "Render each historical position"
+
+    # Key concepts box
+    Wish $page draws text "Key Concepts:" with \
+        color yellow offset {-0.30 -0.30} scale 0.5
+
+    Wish $page draws text "• Claim: Observable state" with \
+        color white offset {-0.30 -0.33} scale 0.4
+
+    Wish $page draws text "• When: Reactive pattern matching" with \
+        color white offset {-0.30 -0.36} scale 0.4
+
+    Wish $page draws text "• Hold!: Time-bounded claims" with \
+        color white offset {-0.30 -0.39} scale 0.4
+
+    # Page number
+    Wish $page draws page number 1
+}

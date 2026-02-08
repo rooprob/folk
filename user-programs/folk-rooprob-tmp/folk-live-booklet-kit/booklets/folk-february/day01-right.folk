@@ -1,0 +1,115 @@
+# Day 01: Trace - Right Page (Live Output)
+# Runs the actual trace program when this page is visible
+
+When page folk-february-01-R is visible &\
+     page folk-february-01-R has quad /page/ {
+
+    # Title
+    Wish $page draws title "Day 01: TRACE (Live)"
+
+    # Instruction text
+    Wish $page draws text "Move tags around to see rainbow trails!" with \
+        color cyan offset {0 0.32} scale 0.5
+
+    # Enable tracing on all visible tags (except this page)
+    When tag /tagId/ has quad /quad/ &\
+         /tagId/ != folk-february-01-R {
+
+        Claim $tagId has trace enabled
+
+        # Build trail history
+        set now [clock milliseconds]
+        set maxTrailLength 20
+
+        # Get existing trail
+        set existingTrail [Query! $tagId has trail /t/]
+        if {[llength $existingTrail] > 0} {
+            set trail [dict get [lindex $existingTrail 0] t]
+        } else {
+            set trail {}
+        }
+
+        # Color cycles through rainbow
+        set hue [expr {($now / 50) % 360}]
+        set color [hsvToRgb $hue 1.0 1.0]
+
+        # Add current position
+        lappend trail [list $now $quad $color]
+
+        # Trim old entries (keep last N)
+        if {[llength $trail] > $maxTrailLength} {
+            set trail [lrange $trail end-[expr {$maxTrailLength-1}] end]
+        }
+
+        # Store trail
+        Hold! -keep 100ms -key [list trace-trail $tagId] \
+            Claim $tagId has trail $trail
+    }
+
+    # Render trails
+    When display /disp/ has width /displayWidth/ height /displayHeight/ &\
+         display /disp/ has intrinsics /displayIntrinsics/ &\
+         tag /tagId/ has trail /trail/ &\
+         /tagId/ has resolved geometry /geom/ &\
+         the quad library is /quadLib/ &\
+         the quad changer is /quadChange/ &\
+         the pose library is /poseLib/ {
+
+        fn quadChange
+
+        foreach entry [lrange $trail 0 end-1] {
+            lassign $entry timestamp quad color
+
+            # Transform to display space
+            set pageQuad [$quadLib buffer $quad \
+                              top [dict get $geom top] \
+                              right [dict get $geom right] \
+                              left [dict get $geom left] \
+                              bottom [dict get $geom bottom]]
+
+            set displayQuad [quadChange $pageQuad "display $disp"]
+
+            # Project to screen
+            set screenVerts [lmap v [$quadLib vertices $displayQuad] {
+                $poseLib project $displayIntrinsics $displayWidth $displayHeight $v
+            }]
+            lappend screenVerts [lindex $screenVerts 0]
+
+            # Draw trail segment
+            Wish to draw a line onto $disp with \
+                points $screenVerts width 3 color $color
+        }
+    }
+
+    # Page number
+    Wish $page draws page number 1
+
+    # Observable state visualization
+    When tag /tagId/ has trace enabled &\
+         /tagId/ != folk-february-01-R {
+        set stateText "tag $tagId has trace enabled"
+        Wish $page shows observable state $stateText at {0 -0.35}
+        return  ;# Only show one
+    }
+}
+
+# HSV to RGB helper
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}

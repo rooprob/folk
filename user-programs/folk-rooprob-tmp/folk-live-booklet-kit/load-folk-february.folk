@@ -1,0 +1,53 @@
+# Load Folk February Booklet
+# Source this file to load the complete Folk February booklet system
+
+set this load-folk-february
+
+puts "Loading Folk Live Booklet Kit..."
+
+# Load tag mappings FIRST (maps physical tag IDs to logical page names)
+puts "  Loading tag-mappings.folk..."
+source [file dirname [info script]]/tag-mappings.folk
+
+# Load core infrastructure
+puts "  Loading booklet-core.folk..."
+source [file dirname [info script]]/booklet-core.folk
+
+puts "  Loading booklet-renderer.folk..."
+source [file dirname [info script]]/booklet-renderer.folk
+
+# Load Folk February booklet
+puts "Loading Folk February booklet..."
+
+puts "  Loading booklet metadata..."
+source [file dirname [info script]]/booklets/folk-february/booklet.folk
+
+puts "  Loading day 01 (Trace)..."
+source [file dirname [info script]]/booklets/folk-february/day01-left.folk
+source [file dirname [info script]]/booklets/folk-february/day01-right.folk
+
+puts "  Loading day 02 (Gravity)..."
+source [file dirname [info script]]/booklets/folk-february/day02-left.folk
+source [file dirname [info script]]/booklets/folk-february/day02-right.folk
+
+# Add more days as you create them...
+# source [file dirname [info script]]/booklets/folk-february/day03-left.folk
+# source [file dirname [info script]]/booklets/folk-february/day03-right.folk
+# ...
+
+puts "✨ Folk February booklet loaded!"
+puts ""
+puts "Place booklet pages under projector to see them come alive."
+puts ""
+puts "Available pages:"
+puts "  - Day 01: Trace (rainbow trails)"
+puts "  - Day 02: Gravity (particle physics)"
+puts "  - Days 03-28: Coming soon!"
+puts ""
+puts "Tag naming pattern:"
+puts "  folk-february-01-L (left page, day 1)"
+puts "  folk-february-01-R (right page, day 1)"
+puts ""
+puts "Query booklet state:"
+puts "  Query! the current booklet is /name/"
+puts "  Query! booklet \"folk-february\" has read /r/ of /t/ pages"

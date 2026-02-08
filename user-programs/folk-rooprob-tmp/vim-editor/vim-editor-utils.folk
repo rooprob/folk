@@ -1,0 +1,539 @@
+# This is separate while I port my folk1 editor code 
+
+set vimEditorUtilsLib [library create vimEditorUtilsLib {
+
+    proc x {vector} { lindex $vector 0 }
+    proc y {vector} { lindex $vector 1 }
+
+    proc saveUndoState {undo_stack buffer x y} {
+        lappend undo_stack [list $buffer $x $y]
+        return $undo_stack
+    }
+
+    proc updateCursor {oldCursor updates} {
+        set newCursor $oldCursor
+        if {[dict exists $updates x]} {
+            lset newCursor 0 [expr {max(0, [dict get $updates x] + [x $oldCursor])}]
+        }
+        if {[dict exists $updates y]} {
+            lset newCursor 1 [expr {max(0, [dict get $updates y] + [y $oldCursor])}]
+        }
+        return $newCursor
+    }
+
+    proc insertCharacter {lines newCharacter cursor} {
+        lassign $cursor x y
+        set x [- $x 1]
+        set line [lindex $lines $y]
+        
+        if {$x < 0} {
+            lset lines $y [string cat $newCharacter $line]
+            return $lines
+        } else {
+            set character [string cat [string index $line $x] $newCharacter]
+            set line [string replace $line $x $x $character]
+            lset lines $y $line
+            return $lines 
+        }
+    }
+ 
+        
+    proc deleteCharacter {lines cursor} {
+        lassign $cursor x y
+        if {$x == 0 && $y > 0} {
+            set previousLine [lindex $lines [expr {$y - 1}]]
+            set thisLine [lindex $lines $y]
+            set mergedLine [string cat $previousLine $thisLine]
+            lset lines [expr {$y - 1}] $mergedLine
+            lset lines $y ""
+            set newLines {}
+            for {set i 0} {$i < [llength $lines]} {incr i} {
+            if {$i != $y} {
+                lappend newLines [lindex $lines $i]
+            }
+            }
+            set lines $newLines
+        } else {
+            set line [lindex $lines $y]
+            set line [string replace $line [expr {$x - 1}] [expr {$x - 1}] ""]
+            lset lines $y $line
+        }
+        return [join $lines "\n"]
+    }
+
+    proc eraseCharacter {lines cursor} {
+        lassign $cursor x y
+        set length [getCurrentLineLength $lines $cursor]
+        set currentLine [lindex $lines $y]
+        set bufferLength [llength $lines]
+        puts "DEBUG: currentLine is $currentLine, length $length ($x, $y)"
+
+        # if x is on the line, eat the current character.
+        # if x is on the end of the line also -1
+        set line [lindex $lines $y]
+        set line [string replace $line $x $x ""]
+        lset lines $y $line
+
+        set newLength [getCurrentLineLength $lines $cursor]
+        
+        set newCursor $cursor
+        if {$x == $newLength} {
+            set newCursor [updateCursor $cursor {x -1}]
+        }
+        return [list $lines $newCursor]
+    }
+
+    proc deleteToBeginning {lines cursor} {
+        lassign $cursor x y
+        set line [lindex $lines $y]
+        set newLine [string range $line $x end]
+        lset lines $y $newLine
+        return $lines 
+    }
+
+    proc deleteLine {lines cursor} {
+        lassign $cursor x y
+        set newLines [list]
+        for {set i 0} {$i < [llength $lines]} {incr i} {
+            if {$i != $y} {
+            lappend newLines [lindex $lines $i]
+            }
+        }
+        return $newLines
+    }
+
+    proc insertNewline {lines cursor} {
+        lassign $cursor x y
+        
+        set buffer [list]
+        for {set i 0} {$i < [llength $lines]} {incr i} {
+            set line [lindex $lines $i]
+            if {$y != $i} {
+            lappend buffer $line
+            continue
+            }
+            set new_line [string range $line 0 [expr {$x - 1}]]
+            lappend buffer $new_line
+            lappend buffer [string range $line $x end]
+        }
+        return $buffer
+    }
+
+    proc insertNewlineBelowCursor {lines cursor} {
+        lassign $cursor x y
+        
+        set buffer [list]
+        for {set i 0} {$i < [llength $lines]} {incr i} {
+            set line [lindex $lines $i]
+            if {$y != $i} {
+            lappend buffer $line
+            continue
+            }
+            lappend buffer [spaces $x]
+            lappend buffer $line
+        }
+        return $buffer
+    }
+    
+    proc getLineLength {lines cursor} {
+        set line [lindex $lines [lindex $cursor 1]]
+        set ll [string length $line]
+        return $ll
+    }
+
+    proc lineNumberView {ystart linecount} {
+        set yend [expr {$ystart + $linecount}]
+        set numbers [list]
+        for {set i [expr {$ystart + 1}]} {$i <= $yend} {incr i} {
+            lappend numbers $i
+        }
+        join $numbers "\n"
+    }
+
+    proc getCurrentLineLength {lines cursor} {
+        set currentLine [lindex $lines [y $cursor]]
+        string length $currentLine
+    }
+
+    proc getFirstCharPosition {lines cursor} {
+        set currentLine [lindex $lines [y $cursor]]
+        set len [string length $currentLine]
+        for {set i 0} {$i < $len} {incr i} {
+            set c [string index $currentLine $i]
+            if {$c ne " " && $c ne "\t"} {
+                puts "DEBUG: getFirstCharPosition was $i"
+                return $i
+            }
+        }
+        return 0
+    }
+
+    proc wrapLine {line width} {
+        set out {}
+        set len [string length $line]
+        if {$len == 0} {
+            # blank lines
+            lappend out $line
+        }
+        for {set i 0} {$i < $len} {incr i $width} {
+            lappend out [string range $line $i [expr {$i + $width - 1}]]
+        }
+        return $out
+    }
+
+    proc isWordChar {ch} {
+        return [regexp {\w} $ch]
+    }
+    
+    proc spaces {n} {
+        return [string repeat " " $n]
+    }
+    
+    proc firesKeyUpwards {step radians x0 y0 vx vy  gravity width height} {
+
+        # vertical motion
+        set x [expr {$x0 + $vx * $step}]
+        # horizontal motion
+        set y [expr {$y0 + $vy * $step + 0.5 * $gravity * $step * $step}]
+        # puts "firesKeyUpwards: $step $x0,$y"
+        set theta [expr {$radians + 3.14159}]
+        set p [list $x0 $y0]
+        set np [list $x $y]
+        set p [vec2 add [vec2 rotate [vec2 sub $p $np] $theta] $p]
+
+        lassign $p x y
+        if {$y > $height || $x < 0 || $x > $width} {
+            return [list]
+        }
+        return [list $x $y]
+    }
+
+    proc motionTarget {buffer cursor char} {
+
+        lassign $cursor x y
+
+        set motion_type "char"
+        set inclusive 0
+
+        switch -- $char {
+            zero {
+                set x 0
+            }
+            asciicircum {
+                set x [getFirstCharPosition $buffer $cursor]
+                puts "---> first char pos is $x"
+                if {$x == -1} { set x 0 }
+            }
+            dollar {
+                set line [lindex $buffer $y]
+                set x [string length $line]
+            }
+            c {
+                # treat 'cc' like 'c_' (change whole line)
+                return [list 0 $y "line" 1]
+            }
+            w {
+                set line [lindex $buffer $y]
+                set len [string length $line]
+                set i $x
+                while {$i < $len && ![isWordChar [string index $line $i]]} { incr i }
+                while {$i < $len && [isWordChar [string index $line $i]]} { incr i }
+                while {$i < $len && ![isWordChar [string index $line $i]]} { incr i }
+                if {$i < $len} {
+                    set x $i
+                } elseif {$y < [expr {[llength $buffer] - 1}]} {
+                    incr y
+                    set x 0
+                }
+                set motion_type "char"
+                set inclusive 0
+            }
+            b {
+                set line [lindex $buffer $y]
+                set i [expr {$x - 1}]
+                while {$i >= 0 && ![isWordChar [string index $line $i]]} { incr i -1 }
+                while {$i >= 0 && [isWordChar [string index $line $i]]} { incr i -1 }
+                if {$i < 0 && $y > 0} {
+                    incr y -1
+                    set x [string length [lindex $buffer $y]]
+                } else {
+                    set x [expr {$i + 1}]
+                }
+            }
+            e {
+                set line [lindex $buffer $y]
+                set len [string length $line]
+                set i $x
+            
+                # always advance at least one character if possible
+                if {$i < $len - 1} {
+                    incr i
+                } elseif {$y < [llength $buffer]} {
+                    incr y 
+                    set x 0
+                    set i $x
+                    set line [lindex $buffer $y]
+                    set len [string length $line]
+                }
+                # if currently in word, go to it's end
+                if {[isWordChar [string index $line $i]]} {
+                    while {$i < $len && [isWordChar [string index $line $i]]} {
+                        incr i
+                    }
+                    set x [expr {$i - 1}]
+                } else {
+                    # we're at the end of a word, continue
+                    while {$i < $len && [isWordChar [string index $line $i]]} { incr i }
+                    # skip non-word chars
+                    while {$i < $len && ![isWordChar [string index $line $i]]} { incr i }
+                    # skip through the word
+                    while {$i < $len && [isWordChar [string index $line $i]]} { incr i }
+                    if {$i > 0} {
+                        set x [expr {$i - 1}]
+                    }
+                }
+                set motion_type "char"
+                set inclusive 1
+            }
+            default {
+                return ""
+            }
+        }
+        return [list $x $y $motion_type $inclusive]
+    }
+
+    proc applyOperator {buffer cursor op x0 y0 x1 y1 motion_type inclusive} {
+
+        # Normalize positions
+        if {$y0 > $y1 || ($y0 == $y1 && $x0 > $x1)} {
+            foreach {x0 x1} [list $x1 $x0] {}
+            foreach {y0 y1} [list $y1 $y0] {}
+        }
+
+        if {$motion_type eq "char"} {
+            # adjust for inclusive or exclusive
+            if {!$inclusive} {
+                set x1 [expr {$x1 - 1}]
+            }
+            if {$y0 == $y1} {
+                set line [lindex $buffer $y0]
+                set new_line "[string range $line 0 [expr {$x0 - 1}]]"
+                append new_line "[string range $line [expr {$x1 + 1}] end]"
+                set buffer [lreplace $buffer $y0 $y0 $new_line]
+            } else {
+                # TODO: multiline delete
+                puts "Multiline delete not yet supported"
+            }
+        } elseif {$motion_type eq "line"} {
+            set buffer [lreplace $buffer $y0 $y1]
+        }
+
+        return [list $buffer $cursor]
+    }
+
+    
+    # returns {newCursor newMaxCursorX}
+    proc handleNormal {mode op undo_stack key buffer cursor} {
+
+        # normal mode pending operation
+        if {[llength $op] > 0} {
+
+            set pending_operation [lindex $op 0]
+            if {$pending_operation in {"d" "c"}} {
+                set undo_stack [saveUndoState $undo_stack $buffer [x $cursor] [y $cursor]]
+            } 
+            puts "DEBUG: length of undo_stack is now [llength $undo_stack]"
+
+            set motion [motionTarget $buffer $cursor $key]
+            if {$motion ne ""} {
+                lassign $motion tx ty motion_type inclusive
+                set new_buffer_cursor [applyOperator $buffer $cursor $pending_operation [x $cursor] [y $cursor] $tx $ty $motion_type $inclusive]
+                lassign $new_buffer_cursor buffer cursor
+
+                if {$pending_operation == "c"} {
+                    set mode "insert"
+                }
+            }
+            # clear operation pending
+            set op [list]
+
+        } else {
+            # Not a pending operation
+
+            switch $key {
+                c - 
+                d -
+                y {
+                    # change/delete/yank line
+                    # set newCursor [updateCursor $cursor {y -1}]
+                    # set newBuffer [deleteLine $buffer $cursor]
+                    set op [list $key]
+                }
+                colon {
+                    set mode "command"
+                }
+                zero - asciicircum - dollar - w - b - e {
+                    puts "debug: now execuing motion key $key"
+                    set motion [motionTarget $buffer $cursor $key]
+                    lassign $motion tx ty
+                    set cursor [list $tx $ty]
+                }
+                u {
+                    if {[llength $undo_stack] > 0} {
+                        set last [lindex $undo_stack end]
+                        set undo_stack [lreplace $undo_stack end end]
+                        lassign $last buffer prev_x prev_y
+
+                        set cursor [list $prev_x $prev_y]
+                    }
+                }
+                i {
+                    set mode "insert"
+                }
+                a {
+                    set cursor [updateCursor $cursor {x 1}]
+                    set mode "insert"
+                }
+                o {
+                    set cursor [updateCursor $cursor {y 1}]
+                    set buffer [insertNewlineBelowCursor $buffer $updatedCursor]
+                    set mode "insert"
+                }
+                O {
+                    set buffer [insertNewlineBelowCursor $buffer $cursor]
+                    set mode "insert"
+                }
+                x {
+                    set buffer_cursor [eraseCharacter $buffer $cursor]
+                    lassign $buffer_cursor buffer cursor
+                }
+                G {
+                    lassign $cursor x y
+                    set bufferLength [- [llength $buffer] 1]
+                    set cursor [list 0 $bufferLength]
+                }
+                h {
+                    # left 
+                    if {[x $cursor] == 0 && [y $cursor] == 0} {
+                        # pass
+                    } elseif {[x $cursor] == 0} {
+                        set cursor [updateCursor $cursor {y -1}]
+                        set previousLineLength  [getCurrentLineLength $buffer $cursor]
+                        set cursor [list $previousLineLength [y $cursor]]
+                    } else {
+                        set cursor [updateCursor $cursor {x -1}]
+                    }
+                }
+                l {
+                    set currentLineLength [getCurrentLineLength $buffer $cursor]
+                    if {[x $cursor] == $currentLineLength} {
+                    if {[y $cursor] == [expr {[llength $buffer] - 1}]} {
+                        Hold "cursor$kbPath" {
+                        Claim the $kbPath cursor is $cursor
+                        }
+                    } else {
+                        set newCursor [updateCursor $cursor {y 1}]
+                        puts "movement mode for key $key: $newCursor"
+                        Hold "cursor$kbPath" {
+                        Claim the $kbPath cursor is [list 0 [y $newCursor]]
+                        }
+                    }
+                    } else {
+                    set newCursor [updateCursor $cursor {x 1}]
+                    puts "movement mode for key $key: $newCursor"
+                    Hold "cursor$kbPath" {
+                        Claim the $kbPath cursor is $newCursor 
+                    }
+                    }
+                }
+              j {
+                # down
+                set linecount [llength $buffer]
+                puts "DEBUG: buffer length: $linecount"
+                set updatedCursor [updateCursor $cursor {y 1}]
+                puts "movement mode for key $key: $updatedCursor"
+                set currentLineLength [getCurrentLineLength $buffer $updatedCursor]
+
+                if {[y $updatedCursor] == $linecount} {
+                  puts "DEBUG: limit reached: $cursor"
+                  Hold "cursor$kbPath" {
+                    Claim the $kbPath cursor is $cursor
+                  }
+                  return
+                } elseif {[x $updatedCursor] > $currentLineLength} {
+                  puts "DEBUG: need to correct X"
+                  Hold "cursor$kbPath" {
+                    Claim the $kbPath cursor is [list $currentLineLength  [y $updatedCursor]]
+                  }
+                } else {
+                  puts "DEBUG: else updated cursor"
+                  Hold "cursor$kbPath" {
+                    Claim the $kbPath cursor is $updatedCursor
+                  }
+                }
+              }
+              k {
+                # up
+                set updatedCursor [updateCursor $cursor {y -1}]
+                puts "movement mode for key $key: $updatedCursor"
+                set currentLineLength  [getCurrentLineLength $buffer $updatedCursor]
+                if {[x $updatedCursor] > $currentLineLength} {
+                  Hold "cursor$kbPath" {
+                    Claim the $kbPath cursor is [list $currentLineLength  [y $updatedCursor]]
+                  }
+                } else {
+                  Hold "cursor$kbPath" {
+                    Claim the $kbPath cursor is $updatedCursor
+                  }
+                }
+              }
+            }
+            return [list $code $cursor $maxCursorX]
+        }
+        
+
+    # returns {newCode newCursor newMaxCursorX}
+    proc handleRemovalAndReturn {key code cursor maxCursorX} {
+        switch $key {
+            Delete {
+                if { $cursor != 0 } {
+                set cursor [- $cursor 1]
+                set code [deleteText $code $cursor 1]
+                set maxCursorX [lindex [cursorToXy $code $cursor] 0]
+                }
+            }
+            Remove {
+                set code [deleteText $code $cursor 1]
+            }
+            Control_u {
+                # delete from cursor back to 0 and move cursor to 0
+                lassign [cursorToXy $code $cursor] cursorX cursorY
+                set code [deleteToBeginning $code $cursor]
+                set newX 0
+                set cursor [xyToCursor $code $newX $cursorY]
+            }
+            Return {
+                # figure out how many spaces there are before the current line
+                regexp {^(\s*)} [getLine $code $cursor] -> spacing
+                set spacingLen [string length $spacing]
+                lassign [insertText $code $cursor "\n$spacing"] code
+
+                set maxCursorX $spacingLen
+                set cursor [+ $cursor [+ 1 $spacingLen]]
+            }
+        }
+
+        return [list $code $cursor $maxCursorX]
+    }
+
+    proc lineNumberView {ystart linecount} {
+        set yend [expr {$ystart + $linecount}]
+        set numbers [list]
+        for {set i [expr {$ystart + 1}]} {$i <= $yend} {incr i} {
+            lappend numbers $i
+        }
+        join $numbers "\n"
+    }
+}]
+
+Claim the vim-editor utils library is $vimEditorUtilsLib

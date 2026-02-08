@@ -1,0 +1,192 @@
+# Day 02: Gravity Rain
+# Rainbow balls fall from the top of the display to the bottom.
+# Balls bounce off any cards on the table.
+#
+# Enable: Place a card with "Wish $this runs gravity rain"
+# Uses 1 Hold! slot for ALL ball state.
+
+set this day02-gravity
+
+# Convert HSV to RGB (H: 0-360, S: 0-1, V: 0-1) -> {r g b a}
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}
+
+set gravity 400.0
+set maxLife 8000
+
+# Check if point is inside convex quad (CW winding, y-down)
+fn pointInQuad {px py quad} {
+    for {set i 0} {$i < 4} {incr i} {
+        set j [expr {($i + 1) % 4}]
+        lassign [lindex $quad $i] x1 y1
+        lassign [lindex $quad $j] x2 y2
+        set cross [expr {($x2 - $x1) * ($py - $y1) - ($y2 - $y1) * ($px - $x1)}]
+        if {$cross < 0} { return 0 }
+    }
+    return 1
+}
+
+# Find outward normal of closest edge
+fn closestEdgeNormal {px py quad} {
+    set minDist 1e9
+    set bestNx 0
+    set bestNy -1
+    for {set i 0} {$i < 4} {incr i} {
+        set j [expr {($i + 1) % 4}]
+        lassign [lindex $quad $i] x1 y1
+        lassign [lindex $quad $j] x2 y2
+        set dx [expr {$x2 - $x1}]
+        set dy [expr {$y2 - $y1}]
+        set len [expr {sqrt($dx*$dx + $dy*$dy)}]
+        if {$len < 0.001} continue
+        set nx [expr {$dy / $len}]
+        set ny [expr {-$dx / $len}]
+        set dist [expr {abs(($px - $x1) * $nx + ($py - $y1) * $ny)}]
+        if {$dist < $minDist} {
+            set minDist $dist
+            set bestNx $nx
+            set bestNy $ny
+        }
+    }
+    return [list $bestNx $bestNy]
+}
+
+# Compute screen-space quad for each card (for collision detection)
+# Uses page quad (full card with margins), not just AprilTag quad
+When /tagId/ has quad /quad/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     display /disp/ has intrinsics /intrinsics/ &\
+     display /disp/ has width /w/ height /h/ &\
+     the pose library is /poseLib/ {
+
+    fn quadChange
+    # Buffer outward by 20mm to match physical card edge
+    set buffered [$quadLib buffer $quad top 0.02 right 0.02 bottom 0.02 left 0.02]
+    set displayQuad [quadChange $buffered "display $disp"]
+    set verts3d [$quadLib vertices $displayQuad]
+
+    set screenQuad [list]
+    foreach v $verts3d {
+        lappend screenQuad [$poseLib project $intrinsics $w $h $v]
+    }
+
+    Claim tag $tagId has screen quad $screenQuad
+}
+
+# Single When clause: spawn + collision + draw
+# All ball state lives in ONE Hold! slot
+When the clock time is /clockTime/ &\
+     /someone/ wishes /anyone/ runs gravity rain &\
+     display /disp/ has width /w/ height /h/ {
+
+    set now [clock milliseconds]
+
+    # Get existing ball collection
+    set results [Query! gravity has balls /b/]
+    if {[llength $results] > 0} {
+        set balls [dict get [lindex $results 0] b]
+    } else {
+        set balls [dict create lastSpawn 0]
+    }
+
+    # Maybe spawn a new ball
+    set lastSpawn [dict get $balls lastSpawn]
+    if {$now - $lastSpawn >= 200} {
+        set sx [expr {rand() * $w}]
+        set vx [expr {(rand() - 0.5) * 100}]
+        set vy [expr {rand() * 50}]
+        set hue [expr {int(rand() * 360)}]
+        set color [hsvToRgb $hue 1.0 1.0]
+        set filled [expr {rand() > 0.5 ? "true" : "false"}]
+        set radius [expr {15 + int(rand() * 115)}]
+        set ballId "b$now[expr {int(rand()*1000)}]"
+
+        dict set balls $ballId [dict create \
+            x0 $sx y0 0 vx $vx vy $vy \
+            spawnTime $now originalSpawn $now \
+            color $color filled $filled radius $radius]
+        dict set balls lastSpawn $now
+    }
+
+    # Get all card screen quads for collision
+    set quads [Query! tag /t/ has screen quad /sq/]
+
+    # Process each ball: position + collision + draw
+    set keep [dict create lastSpawn [dict get $balls lastSpawn]]
+
+    dict for {ballId state} $balls {
+        if {$ballId eq "lastSpawn"} continue
+
+        # Expire old balls
+        set age [expr {$now - [dict get $state originalSpawn]}]
+        if {$age > $maxLife} continue
+
+        # Analytical position
+        set t [expr {($now - [dict get $state spawnTime]) / 1000.0}]
+        set bx [expr {[dict get $state x0] + [dict get $state vx] * $t}]
+        set by [expr {[dict get $state y0] + [dict get $state vy] * $t + 0.5 * $gravity * $t * $t}]
+
+        # Skip balls past bottom
+        if {$by > $h} continue
+
+        # Check collisions with cards
+        if {![dict exists $state lastBounce] || ($now - [dict get $state lastBounce]) >= 150} {
+            foreach quadResult $quads {
+                set sq [dict get $quadResult sq]
+                if {![pointInQuad $bx $by $sq]} continue
+
+                set cvx [dict get $state vx]
+                set cvy [expr {[dict get $state vy] + $gravity * $t}]
+
+                lassign [closestEdgeNormal $bx $by $sq] nx ny
+                set vDotN [expr {$cvx * $nx + $cvy * $ny}]
+                if {$vDotN >= 0} continue
+
+                # Bounce with energy loss
+                set factor [expr {-1.7 * $vDotN}]
+                dict set state x0 [expr {$bx + 10.0 * $nx}]
+                dict set state y0 [expr {$by + 10.0 * $ny}]
+                dict set state vx [expr {$cvx + $factor * $nx}]
+                dict set state vy [expr {$cvy + $factor * $ny}]
+                dict set state spawnTime $now
+                dict set state lastBounce $now
+
+                set bx [dict get $state x0]
+                set by [dict get $state y0]
+                break
+            }
+        }
+
+        # Draw
+        Wish to draw a circle onto $disp with \
+            center [list $bx $by] \
+            radius [dict get $state radius] \
+            thickness 2 \
+            color [dict get $state color] \
+            filled [dict get $state filled]
+
+        dict set keep $ballId $state
+    }
+
+    # One Hold! for ALL balls
+    Hold! -keep 500ms -key gravity-balls \
+        Claim gravity has balls $keep
+}

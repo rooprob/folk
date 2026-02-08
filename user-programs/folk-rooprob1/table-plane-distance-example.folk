@@ -1,0 +1,126 @@
+# # table-plane-distance-example.folk
+# # Practical examples of using distance-based interactions
+# #
+# # Shows common patterns:
+# #   - Triggering actions when tags get close
+# #   - Creating groups of nearby tags
+# #   - Building network/graph visualizations
+# #   - Proximity-based effects
+# 
+# set this table-plane-distance-example
+# 
+# # Example 1: Highlight tags when they're near each other
+# When tag /tagA/ is near tag /tagB/ {
+#     # Both tags get highlighted in orange
+#     Wish $tagA is outlined orange
+#     Wish $tagB is outlined orange
+# }
+# 
+# # Example 2: Special behavior for specific tag combinations
+# When tag 42 is touching tag 99 {
+#     puts "SECRET COMBO ACTIVATED!"
+#     Wish tag 42 is outlined magenta
+#     Wish tag 99 is outlined magenta
+# 
+#     # Could trigger something special here
+#     # Claim the secret mode is activated
+# }
+# 
+# # Example 3: Create groups of touching tags
+# # All tags within 5cm of each other form a "cluster"
+# When tag /tagA/ is touching tag /tagB/ &\
+#      tag /tagB/ is touching tag /tagC/ {
+# 
+#     # Create a cluster ID (use smallest tag ID as cluster name)
+#     set clusterTags [lsort [list $tagA $tagB $tagC]]
+#     set clusterLeader [lindex $clusterTags 0]
+# 
+#     # Each tag claims membership in this cluster
+#     Claim tag $tagA is in cluster $clusterLeader
+#     Claim tag $tagB is in cluster $clusterLeader
+#     Claim tag $tagC is in cluster $clusterLeader
+# 
+#     # Visualize the cluster
+#     Wish $clusterLeader draws text "Cluster" with color yellow
+# }
+# 
+# # Example 4: Distance-based effects (closer = stronger effect)
+# When tag /tagA/ has distance /dist/ to tag /tagB/ &\
+#      /dist/ < 0.30 &\
+#      tag /tagA/ has plane position /posA/ &\
+#      tag /tagB/ has plane position /posB/ &\
+#      the plane to screen converter is /toScreen/ &\
+#      display /disp/ has width /dispW/ height /dispH/ {
+# 
+#     # Calculate effect strength (1.0 when touching, 0.0 at 30cm)
+#     set strength [expr {1.0 - ($dist / 0.30)}]
+# 
+#     # Draw line with thickness based on proximity
+#     set lineWidth [expr {max(1, int($strength * 5))}]
+# 
+#     # Color fades from red (close) to blue (far)
+#     set r [expr {$strength}]
+#     set g 0
+#     set b [expr {1.0 - $strength}]
+#     set color [list $r $g $b 1.0]
+# 
+#     set screenA [{*}$toScreen {*}$posA]
+#     set screenB [{*}$toScreen {*}$posB]
+# 
+#     Wish to draw a line onto $disp with \
+#         points [list $screenA $screenB] \
+#         width $lineWidth \
+#         color $color
+# }
+# 
+# # Example 5: Find the nearest neighbor for each tag
+# When tag /tagA/ has distance /dist/ to tag /otherId/ &\
+#      tag /nobody/ has distance /smallerDist/ to tag /tagA/ where {
+#          expr {$smallerDist < $dist}
+#      } {
+#     # No other tag is closer, so otherId is the nearest neighbor
+#     Claim tag $tagA has nearest neighbor $otherId at distance $dist
+# }
+# 
+# When tag /tagA/ has nearest neighbor /nearest/ at distance /dist/ {
+#     set distCm [expr {int($dist * 100)}]
+#     puts "Tag $tagA: nearest neighbor is $nearest at ${distCm}cm"
+# }
+# 
+# # Example 6: Detect formations/patterns
+# # Detect when three tags form a triangle with specific properties
+# When tag /t1/ has distance /d12/ to tag /t2/ &\
+#      tag /t2/ has distance /d23/ to tag /t3/ &\
+#      tag /t3/ has distance /d31/ to tag /t1/ &\
+#      /t1/ < /t2/ & /t2/ < /t3/ {  # Avoid duplicates
+# 
+#     # Check if it's roughly an equilateral triangle (all sides within 20%)
+#     set avgDist [expr {($d12 + $d23 + $d31) / 3.0}]
+#     set tolerance [expr {$avgDist * 0.2}]
+# 
+#     if {abs($d12 - $avgDist) < $tolerance &&
+#         abs($d23 - $avgDist) < $tolerance &&
+#         abs($d31 - $avgDist) < $tolerance} {
+# 
+#         Claim tags [list $t1 $t2 $t3] form an equilateral triangle
+# 
+#         puts "Equilateral triangle detected: $t1, $t2, $t3"
+# 
+#         # Highlight the triangle
+#         Wish $t1 is outlined cyan
+#         Wish $t2 is outlined cyan
+#         Wish $t3 is outlined cyan
+#     }
+# }
+# 
+# # Example 7: Broadcast to nearby tags
+# # Any tag that "sends" a message reaches all nearby tags
+# When tag /sender/ sends message /msg/ &\
+#      tag /sender/ is near tag /receiver/ {
+# 
+#     Claim tag $receiver received message $msg from $sender
+#     puts "Tag $receiver got message: $msg (from $sender)"
+# }
+# 
+# # To trigger: Claim tag 42 sends message "Hello!"
+# 

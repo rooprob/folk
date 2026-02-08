@@ -1,0 +1,52 @@
+# tag-mappings.folk
+# Maps physical AprilTag IDs to logical booklet page names
+# This makes booklets portable across different Folk installations
+
+set this tag-mappings
+
+# Each Folk installation prints tags with their own numeric IDs
+# This file creates the mapping: physical tag → logical page name
+
+# Example mappings for Folk February booklet
+# Adjust these numbers to match YOUR printed tags
+
+# Day 01: Trace
+Claim tag 100 is page folk-february-01-L
+Claim tag 101 is page folk-february-01-R
+
+# Day 02: Gravity
+Claim tag 102 is page folk-february-02-L
+Claim tag 103 is page folk-february-02-R
+
+# Day 03: Echo
+Claim tag 104 is page folk-february-03-L
+Claim tag 105 is page folk-february-03-R
+
+# ... continue for all 28 days ...
+
+# Day 28: Memory
+Claim tag 154 is page folk-february-28-L
+Claim tag 155 is page folk-february-28-R
+
+# Cover page
+Claim tag 99 is page folk-february-cover
+
+# ============================================
+# HOW TO USE THIS:
+# ============================================
+#
+# 1. Print AprilTags with sequential IDs (e.g., 100-155)
+# 2. Update the mappings above to match your printed tags
+# 3. The booklet programs will work with your tag numbers!
+#
+# Different installations can use different tag ranges:
+#   - Installation A: tags 100-155
+#   - Installation B: tags 200-255
+#   - Installation C: tags 500-555
+#
+# Just update this mapping file for each installation.
+#
+# ============================================
+
+puts "Tag mappings loaded for Folk February booklet"
+puts "Using tags 100-155 (adjust in tag-mappings.folk for your installation)"

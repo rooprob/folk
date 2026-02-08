@@ -1,0 +1,111 @@
+# Nearest Media Card Library
+#
+# Any tag can become a presenter by claiming:
+#   Wish $this is a presentation
+#
+# This library then finds the nearest media card
+# and displays its content on the presenter tag.
+#
+# Requires: table-plane.folk (for plane positions and distance calculator)
+
+set this nearest-media-card
+
+# When any tag wishes to be a presentation
+When /someone/ wishes /presenter/ is a presentation &\
+     tag /presenter/ has plane position /presenterPos/ &\
+     the plane distance calculator is /distCalc/ &\
+     the image library is /imageLib/ &\
+     the image loader is /loadImage/ {
+ 
+   Wish $presenter is titled "Presentation"
+ 
+   # Find closest media card
+   set closestCard ""
+   set closestDistance 999999
+
+   ForEach! /card/ is a mediacard with /...options/ &\
+        tag /card/ has plane position /cardPos/ {
+        set dist [{*}$distCalc $presenterPos $cardPos]
+        if {$dist < $closestDistance} {
+            set closestDistance $dist
+            set closestCard $card
+        }
+     }
+ 
+    if {$closestCard ne ""} {
+        Claim $presenter is closest to card $closestCard at distance $closestDistance
+    }
+#   else {
+#         fn loadImage 
+#         set im [loadImage "./1920px/Cat_Ginger.jpg"] 
+#         Claim $presenter is debugging mediacard with image $im at timestamp 0
+#         #Claim $presenter is debugging mediacard with live camera
+#     }
+}
+
+# Display debug card
+When /presenter/ is debugging mediacard with image /im/ at timestamp /ts/ &\
+     /presenter/ has resolved geometry /geom/ {
+
+    Wish $presenter is labelled "Debugging"
+
+    set page_width [dict get $geom width]
+    set page_height [dict get $geom height]
+    set page_center [list [/ $page_width 2] [/ $page_height 2]]
+
+    Wish -keep 28ms to draw an image onto $presenter with \
+        position $page_center \
+        image $im \
+        anchor center \
+        width [* $page_width 0.6]
+
+    # Stream to HLS (requires: sudo systemctl start folk-hls-stream)
+    Wish "hls" streams image $im to hls
+}
+
+When /presenter/ is debugging mediacard with live camera &\
+     /presenter/ has resolved geometry /geom/ &\
+     camera /cam/ has frame /im/ at timestamp /ts/ {
+
+    Wish $presenter is labelled "Debugging"
+
+    set page_width [dict get $geom width]
+    set page_height [dict get $geom height]
+    set page_center [list [/ $page_width 2] [/ $page_height 2]]
+
+    Wish to draw an image onto $presenter with \
+        position $page_center \
+        image $im \
+        anchor center \
+        width [* $page_width 0.6]
+
+    # Stream to HLS (requires: sudo systemctl start folk-hls-stream)
+    #Wish "hls" streams image $im to hls
+}
+
+# Display the closest card's image on the presenter
+When /presenter/ is closest to card /card/ at distance /distance/ &\
+     /presenter/ has resolved geometry /geom/ &\
+     /card/ is a mediacard with image /im/ at timestamp /ts/ {
+
+    set page_width [dict get $geom width]
+    set page_height [dict get $geom height]
+    set page_center [list [/ $page_width 2] [/ $page_height 2]]
+
+    Wish to draw an image onto $presenter with \
+        position $page_center \
+        image $im \
+        anchor center \
+        width [* $page_width 0.6]
+
+    # Stream to HLS (requires: sudo systemctl start folk-hls-stream)
+    #Wish "hls" streams image $im to hls
+}
+
+# Highlight closest card when within 30cm
+When /presenter/ is closest to card /card/ at distance /dist/ &\
+     /someone/ wishes /presenter/ is a presentation {
+    if {$dist < 0.3} {
+        Wish $card is outlined blue
+    }
+}

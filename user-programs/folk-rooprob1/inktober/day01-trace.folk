@@ -1,0 +1,105 @@
+# Day 01: Trace
+# Rainbow-colored outlines that leave a fading trail as tags move
+#
+# To enable tracing on a tag, claim: "tag <id> has trace enabled"
+# or "Wish all tags have trace enabled" to enable for all tags
+
+set this day01-trace
+
+# Convert HSV to RGB (H: 0-360, S: 0-1, V: 0-1) -> {r g b a}
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}
+
+When /someone/ wishes all tags have trace enabled {
+    When tag /tagId/ has quad /quad/ {
+        Claim $tagId has trace enabled
+    }
+}
+
+# Store tag positions with rainbow colors every 200ms (only for enabled tags)
+When the clock time is /clockTime/ &\
+     tag /tagId/ has quad /quad/ &\
+     /tagId/ has trace enabled {
+
+    set now [clock milliseconds]
+
+    # Calculate current rainbow color (3 second cycle)
+    set hue [expr {int(fmod($clockTime * 120, 360))}]
+    set color [hsvToRgb $hue 1.0 1.0]
+
+    # Display rainbow outline on current tag
+    Wish $tagId is outlined $color
+
+    # Throttle position updates to every 200ms
+    set trail [Query! tag $tagId has trail /t/]
+    if {[llength $trail] > 0} {
+        set existingTrail [dict get [lindex $trail 0] t]
+        set lastTime [lindex [lindex $existingTrail end] 0]
+        if {$now - $lastTime < 200} {
+            return
+        }
+    } else {
+        set existingTrail [list]
+    }
+
+    lappend existingTrail [list $now $quad $color]
+    if {[llength $existingTrail] > 8} {
+        set existingTrail [lrange $existingTrail end-7 end]
+    }
+
+    Hold! -keep 2000ms -key [list trace-trail $tagId] \
+        Claim tag $tagId has trail $existingTrail
+}
+
+# Draw ghost page outlines at each trail position
+When display /disp/ has width /displayWidth/ height /displayHeight/ &\
+     display /disp/ has intrinsics /displayIntrinsics/ &\
+     tag /tagId/ has trail /trail/ &\
+     /tagId/ has resolved geometry /geom/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     the pose library is /poseLib/ {
+
+    fn quadChange
+
+    # Draw each trail position (excluding current)
+    foreach entry [lrange $trail 0 end-1] {
+        lassign $entry timestamp quad color
+
+
+        # Expand tag quad to full page quad
+        set pageQuad [$quadLib buffer $quad \
+                          top [dict get $geom top] \
+                          right [dict get $geom right] \
+                          left [dict get $geom left] \
+                          bottom [dict get $geom bottom]]
+
+        # Project page quad vertices to screen coordinates
+        set displayQuad [quadChange $pageQuad "display $disp"]
+        set screenVerts [lmap v [$quadLib vertices $displayQuad] {
+            $poseLib project $displayIntrinsics $displayWidth $displayHeight $v
+        }]
+        lappend screenVerts [lindex $screenVerts 0]
+
+        # Draw the page outline
+        Wish to draw a line onto $disp with \
+            points $screenVerts width 3 color $color
+    }
+}

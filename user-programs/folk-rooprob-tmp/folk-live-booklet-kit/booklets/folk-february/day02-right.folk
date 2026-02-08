@@ -1,0 +1,145 @@
+# Day 02: Gravity - Right Page (Live Output)
+# Runs the particle physics simulation when this page is visible
+
+When page folk-february-02-R is visible &\
+     page folk-february-02-R has quad /page/ {
+
+    # Title
+    Wish $page draws title "Day 02: GRAVITY (Live)"
+
+    # Instructions
+    Wish $page draws text "Place tags to create particle fountains!" with \
+        color cyan offset {0 0.32} scale 0.5
+
+    # Enable gravity on all tags (except this page)
+    When tag /tagId/ has quad /quad/ &\
+         /tagId/ != folk-february-02-R &\
+         /tagId/ != folk-february-02-L {
+
+        Claim $tagId has gravity enabled
+        Wish $tagId is outlined yellow
+    }
+
+    # Spawn particles from gravity-enabled tags
+    When the clock time is /clockTime/ &\
+         tag /tagId/ has gravity enabled &\
+         tag /tagId/ has quad /quad/ &\
+         tag /tagId/ has resolved geometry /geom/ &\
+         display /disp/ has width /displayWidth/ height /displayHeight/ &\
+         display /disp/ has intrinsics /displayIntrinsics/ &\
+         the quad library is /quadLib/ &\
+         the quad changer is /quadChange/ &\
+         the pose library is /poseLib/ {
+
+        set now [clock milliseconds]
+
+        # Throttle to 250ms
+        set lastEmit [Query! tag $tagId has last emit time /t/]
+        if {[llength $lastEmit] > 0} {
+            set lastTime [dict get [lindex $lastEmit 0] t]
+            if {$now - $lastTime < 250} {
+                return
+            }
+        }
+
+        Hold! -keep 300ms -key [list gravity-emit $tagId] \
+            Claim tag $tagId has last emit time $now
+
+        fn quadChange
+
+        # Get tag screen position
+        set pageQuad [$quadLib buffer $quad \
+                          top [dict get $geom top] \
+                          right [dict get $geom right] \
+                          left [dict get $geom left] \
+                          bottom [dict get $geom bottom]]
+        set displayQuad [quadChange $pageQuad "display $disp"]
+        lassign [$quadLib vertices $displayQuad] tl tr br bl
+        set center3D [list \
+            [expr {([lindex $tl 0] + [lindex $br 0]) / 2.0}] \
+            [expr {([lindex $tl 1] + [lindex $br 1]) / 2.0}] \
+            [expr {([lindex $tl 2] + [lindex $br 2]) / 2.0}]]
+
+        set screenCenter [$poseLib project $displayIntrinsics $displayWidth $displayHeight $center3D]
+        lassign $screenCenter sx sy
+
+        # Random velocity
+        set vx [expr {(rand() - 0.5) * 200}]
+        set vy [expr {-300 - rand() * 100}]
+
+        # Random color
+        set hue [expr {int(rand() * 360)}]
+        set color [hsvToRgb $hue 1.0 1.0]
+
+        # Create ball
+        set ballId "ball-$now-[expr {int(rand() * 10000)}]"
+        Hold! -keep 5000ms -key [list gravity-ball $ballId] \
+            Claim ball $ballId has screen position [list $sx $sy] \
+                velocity [list $vx $vy] color $color display $disp
+    }
+
+    # Physics update
+    When the clock time is /clockTime/ &\
+         ball /ballId/ has screen position /pos/ velocity /vel/ color /color/ display /disp/ {
+
+        set dt 0.016
+        set gravity 600
+
+        lassign $pos x y
+        lassign $vel vx vy
+
+        # Apply gravity
+        set vy [expr {$vy + $gravity * $dt}]
+
+        # Update position
+        set x [expr {$x + $vx * $dt}]
+        set y [expr {$y + $vy * $dt}]
+
+        # Remove off-screen
+        if {$y > 2500} { return }
+
+        Hold! -keep 100ms -key [list ball-state $ballId] \
+            Claim ball $ballId has screen position [list $x $y] \
+                velocity [list $vx $vy] color $color display $disp
+    }
+
+    # Render balls
+    When ball /ballId/ has screen position /pos/ color /color/ display /disp/ {
+        lassign $pos sx sy
+
+        Wish to draw a circle onto $disp with \
+            center [list $sx $sy] radius 10 \
+            thickness 2 color $color filled true
+    }
+
+    # Page number
+    Wish $page draws page number 2
+
+    # Show observable state
+    set ballCount [llength [Query! ball /b/ has screen position /p/]]
+    if {$ballCount > 0} {
+        Wish $page shows observable state \
+            "$ballCount active particles" at {0 -0.35}
+    }
+}
+
+# HSV to RGB helper
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}

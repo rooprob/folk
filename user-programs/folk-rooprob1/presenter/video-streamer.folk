@@ -1,0 +1,891 @@
+# Video Streamer - Encode camera frames to JPEG and stream via ffmpeg
+# Usage: Wish "stream-name" streams camera frames
+
+set this video-streamer
+
+# Create C library for pipe handling (no extend — avoids fragile imageLib dependency)
+set cc [C]
+$cc include <stdio.h>
+$cc include <stdlib.h>
+$cc include <string.h>
+$cc include <unistd.h>
+$cc include <fcntl.h>
+$cc include <sys/stat.h>
+$cc include <sys/wait.h>
+$cc include <signal.h>
+$cc include <errno.h>
+
+$cc code {
+    #include <stdint.h>
+    #include <time.h>
+    #include <pthread.h>
+
+    // Linux fcntl pipe buffer size (needs _GNU_SOURCE for the defines)
+    #ifndef F_SETPIPE_SZ
+    #define F_SETPIPE_SZ 1031
+    #define F_GETPIPE_SZ 1032
+    #endif
+
+    // Named pipe file descriptors for streaming
+    static int stream_fd = -1;
+    static char stream_path[256] = {0};
+    static pid_t ffmpeg_pid = -1;
+
+    // Mutex for connect/close operations (prevents fd races between threads)
+    static pthread_mutex_t streamFdMutex = PTHREAD_MUTEX_INITIALIZER;
+
+    // FPS tracking
+    static int stream_frame_count = 0;
+    static struct timespec stream_fps_start = {0, 0};
+
+    // Track when "real" content last wrote to the pipe.
+    // Used by testcard fallback to suppress during brief reactive-cycle gaps.
+    // Lives in the base library (single instance) so all $cc2 instances share it.
+    static struct timespec lastRealContentWrite = {0, 0};
+
+    // Image struct (matches image-lib definition)
+    typedef struct {
+        uint32_t width;
+        uint32_t height;
+        int components;
+        uint32_t bytesPerRow;
+        uint64_t uniq;
+        uint8_t* data;
+    } StreamImage;
+}
+
+# Connect to an existing named pipe (created externally, e.g. by systemd)
+# Mutex-protected to prevent multiple threads racing to open the pipe.
+$cc proc connectPipe {char* path} int {
+    pthread_mutex_lock(&streamFdMutex);
+    if (stream_fd >= 0) {
+        pthread_mutex_unlock(&streamFdMutex);
+        return 1; // Already connected
+    }
+
+    // Check pipe exists
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISFIFO(st.st_mode)) {
+        pthread_mutex_unlock(&streamFdMutex);
+        return 0;
+    }
+
+    snprintf(stream_path, sizeof(stream_path), "%s", path);
+
+    // Open non-blocking to avoid hanging
+    stream_fd = open(stream_path, O_WRONLY | O_NONBLOCK);
+
+    if (stream_fd < 0) {
+        pthread_mutex_unlock(&streamFdMutex);
+        return 0;
+    }
+
+    // Increase pipe buffer to 1MB so full JPEG frames (~40-200KB)
+    // fit without waiting for the reader. Default 64KB causes mid-frame
+    // poll timeouts → close → reconnect cycling.
+    fcntl(stream_fd, F_SETPIPE_SZ, 1048576);
+
+    int flags = fcntl(stream_fd, F_GETFL);
+    fcntl(stream_fd, F_SETFL, flags & ~O_NONBLOCK);
+
+    fprintf(stderr, "Connected to pipe: %s (buf=%dKB)\n",
+            path, fcntl(stream_fd, F_GETPIPE_SZ) / 1024);
+    pthread_mutex_unlock(&streamFdMutex);
+    return 1;
+}
+
+# Create named pipe (FIFO) for streaming
+$cc proc createStreamPipe {char* name} int {
+    snprintf(stream_path, sizeof(stream_path), "/tmp/folk-stream-%s.fifo", name);
+
+    // Remove old pipe if it exists
+    unlink(stream_path);
+
+    // Create named pipe
+    if (mkfifo(stream_path, 0666) != 0) {
+        fprintf(stderr, "Failed to create pipe %s: %s\n", stream_path, strerror(errno));
+        return 0;
+    }
+
+    fprintf(stderr, "Created stream pipe: %s\n", stream_path);
+    fprintf(stderr, "Start ffmpeg with: ffmpeg -f image2pipe -framerate 30 -i %s -f mpegts -codec:v mpeg1video -s 640x480 -b:v 1000k -bf 0 udp://localhost:8081\n", stream_path);
+
+    return 1;
+}
+
+# Open pipe for writing (non-blocking)
+$cc proc openStreamPipe {} int {
+    if (stream_fd >= 0) {
+        return 1; // Already open
+    }
+
+    // Open in non-blocking mode initially to avoid hanging
+    stream_fd = open(stream_path, O_WRONLY | O_NONBLOCK);
+
+    if (stream_fd < 0) {
+        if (errno != ENXIO) { // ENXIO = no reader yet, that's ok
+            fprintf(stderr, "Failed to open stream pipe: %s\n", strerror(errno));
+        }
+        return 0;
+    }
+
+    // Switch to blocking mode after opening
+    int flags = fcntl(stream_fd, F_GETFL);
+    fcntl(stream_fd, F_SETFL, flags & ~O_NONBLOCK);
+
+    fprintf(stderr, "Stream pipe opened for writing\n");
+    return 1;
+}
+
+# Write raw RGB frame to pipe
+$cc proc writeRawFrame {void* imgPtr} int {
+    if (stream_fd < 0) {
+        return 0;
+    }
+
+    // Cast to our local Image struct
+    StreamImage* img = (StreamImage*)imgPtr;
+
+    // Write raw RGB data
+    size_t bytes = img->width * img->height * img->components;
+    ssize_t written = write(stream_fd, img->data, bytes);
+
+    if (written < 0) {
+        fprintf(stderr, "Write failed: %s\n", strerror(errno));
+        close(stream_fd);
+        stream_fd = -1;
+        return 0;
+    }
+
+    return 1;
+}
+
+# Write JPEG data to pipe
+$cc proc writeJpegData {Jim_Obj* jpegData} int {
+    if (stream_fd < 0) {
+        return 0;
+    }
+
+    int length;
+    const char* bytes = Jim_GetString(jpegData, &length);
+
+    // Handle short writes
+    size_t total = 0;
+    while (total < (size_t)length) {
+        ssize_t written = write(stream_fd, bytes + total, length - total);
+        if (written <= 0) {
+            fprintf(stderr, "Write failed: %s\n", strerror(errno));
+            close(stream_fd);
+            stream_fd = -1;
+            return 0;
+        }
+        total += written;
+    }
+
+    return 1;
+}
+
+# Write a file directly to the stream pipe (bypasses Tcl string layer)
+# Use this for binary data like JPEG to avoid encoding corruption
+$cc proc writeFileToStream {char* filepath} int {
+    if (stream_fd < 0) {
+        return 0;
+    }
+
+    FILE* fp = fopen(filepath, "rb");
+    if (!fp) {
+        fprintf(stderr, "writeFileToStream: can't open %s\n", filepath);
+        return 0;
+    }
+
+    char buf[65536];
+    size_t n;
+    int ok = 1;
+    while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        size_t total = 0;
+        while (total < n) {
+            ssize_t written = write(stream_fd, buf + total, n - total);
+            if (written <= 0) {
+                fprintf(stderr, "writeFileToStream: write failed: %s\n", strerror(errno));
+                close(stream_fd);
+                stream_fd = -1;
+                ok = 0;
+                break;
+            }
+            total += written;
+        }
+        if (!ok) break;
+    }
+
+    fclose(fp);
+
+    if (ok) {
+        stream_frame_count++;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (stream_fps_start.tv_sec == 0) {
+            stream_fps_start = now;
+        }
+        double elapsed = (now.tv_sec - stream_fps_start.tv_sec) +
+                          (now.tv_nsec - stream_fps_start.tv_nsec) / 1e9;
+        if (elapsed >= 10.0) {
+            fprintf(stderr, "stream: %.1f fps (%d frames in %.0fs)\n",
+                    stream_frame_count / elapsed, stream_frame_count, elapsed);
+            stream_frame_count = 0;
+            stream_fps_start = now;
+        }
+    }
+
+    return ok;
+}
+
+# Close stream (mutex-protected to prevent closing while another thread writes)
+$cc proc closeStream {} void {
+    pthread_mutex_lock(&streamFdMutex);
+    if (stream_fd >= 0) {
+        close(stream_fd);
+        stream_fd = -1;
+        fprintf(stderr, "Stream closed\n");
+    }
+    pthread_mutex_unlock(&streamFdMutex);
+}
+
+# Get stream status
+$cc proc isStreamOpen {} int {
+    return stream_fd >= 0;
+}
+
+# Mark that real content was just written (call after successful image write)
+$cc proc markStreamActive {} void {
+    clock_gettime(CLOCK_MONOTONIC, &lastRealContentWrite);
+}
+
+# Check if real content was written within windowMs (for testcard suppression)
+$cc proc isStreamRecentlyActive {int windowMs} int {
+    if (lastRealContentWrite.tv_sec == 0 && lastRealContentWrite.tv_nsec == 0) return 0;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double elapsedMs = (now.tv_sec - lastRealContentWrite.tv_sec) * 1000.0 +
+                       (now.tv_nsec - lastRealContentWrite.tv_nsec) / 1e6;
+    return elapsedMs < windowMs;
+}
+
+# Get stream fd (for zero-copy writes from other C libs)
+$cc proc getStreamFd {} int {
+    return stream_fd;
+}
+
+# Notify that stream fd was closed externally
+$cc proc resetStreamFd {} void {
+    stream_fd = -1;
+}
+
+# Auto-start ffmpeg to read the pipe
+$cc proc startFfmpegReader {char* streamPath int width int height int fps char* format char* output} int {
+    if (ffmpeg_pid > 0) {
+        fprintf(stderr, "ffmpeg already running (pid %d)\n", ffmpeg_pid);
+        return 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "Fork failed: %s\n", strerror(errno));
+        return 0;
+    }
+
+    if (pid == 0) {
+        // Child process - exec ffmpeg
+        char width_str[32], height_str[32], fps_str[32];
+        snprintf(width_str, sizeof(width_str), "%dx%d", width, height);
+        snprintf(fps_str, sizeof(fps_str), "%d", fps);
+
+        if (strcmp(format, "mjpeg") == 0) {
+            // MJPEG input (compressed JPEG frames)
+            execlp("ffmpeg",
+                   "ffmpeg",
+                   "-f", "image2pipe",
+                   "-codec:v", "mjpeg",
+                   "-framerate", fps_str,
+                   "-i", streamPath,
+                   "-f", "mpegts",
+                   "-codec:v", "mpeg1video",
+                   "-s", width_str,
+                   "-b:v", "1000k",
+                   "-bf", "0",
+                   output,
+                   NULL);
+        } else {
+            // Raw RGB input
+            execlp("ffmpeg",
+                   "ffmpeg",
+                   "-f", "rawvideo",
+                   "-pixel_format", "rgb24",
+                   "-video_size", width_str,
+                   "-framerate", fps_str,
+                   "-i", streamPath,
+                   "-f", "mpegts",
+                   "-codec:v", "mpeg1video",
+                   "-s", width_str,
+                   "-b:v", "1000k",
+                   "-bf", "0",
+                   output,
+                   NULL);
+        }
+
+        // If exec fails
+        fprintf(stderr, "Failed to exec ffmpeg: %s\n", strerror(errno));
+        exit(1);
+    }
+
+    // Parent process
+    ffmpeg_pid = pid;
+    fprintf(stderr, "Started ffmpeg (pid %d) reading from %s (format: %s)\n",
+            pid, streamPath, format);
+    fprintf(stderr, "Streaming to: %s\n", output);
+
+    // Give ffmpeg time to open the pipe
+    usleep(100000); // 100ms
+
+    return 1;
+}
+
+# Stop ffmpeg
+$cc proc stopFfmpeg {} void {
+    if (ffmpeg_pid > 0) {
+        kill(ffmpeg_pid, SIGTERM);
+        waitpid(ffmpeg_pid, NULL, 0);
+        ffmpeg_pid = -1;
+        fprintf(stderr, "ffmpeg stopped\n");
+    }
+}
+
+set streamLib [$cc compile]
+Claim the video stream library is $streamLib
+
+# Optimized JPEG streaming library — extends imageLib for direct access
+# to Jpeg/Image types, skipping Tcl string layer and file roundtrips.
+When the image library is /imageLib/ {
+    set cc2 [C]
+    $cc2 extend $imageLib
+    $cc2 endcflags -lturbojpeg
+    $cc2 include <unistd.h>
+
+    $cc2 code {
+        #include <turbojpeg.h>
+        #include <time.h>
+        #include <string.h>
+        #include <signal.h>
+        #include <errno.h>
+        #include <fcntl.h>
+        #include <poll.h>
+        #include <pthread.h>
+
+        // Multi-slot JPEG cache with mutex (thread-safe).
+        // Slot 0 = testcard, slot 1 = image handler.
+        #define JPEG_CACHE_SLOTS 4
+        typedef struct {
+            uint8_t* buf;
+            size_t size;
+            uint64_t uniq;
+        } JpegCacheSlot;
+        static JpegCacheSlot jpegCache[JPEG_CACHE_SLOTS] = {{0}};
+        static pthread_mutex_t jpegCacheMutex = PTHREAD_MUTEX_INITIALIZER;
+
+        // Per-slot write throttle (C-level, no database overhead)
+        static struct timespec lastSlotWrite[JPEG_CACHE_SLOTS] = {{0}};
+
+        // Pipe write guard: prevents interleaved JPEG frames from concurrent
+        // worker threads. Uses atomic flag instead of mutex because Folk's
+        // KILL mechanism terminates threads without running cleanup — a
+        // pthread_mutex would deadlock permanently if the owner is killed.
+        // Auto-expires after 200ms (writeFull polls at 50ms, so 200ms means
+        // the owner is definitely dead).
+        static volatile int pipeWriteBusy = 0;
+        static volatile uint64_t pipeWriteStartNs = 0;
+
+        static int tryAcquirePipeWrite() {
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            uint64_t nowNs = (uint64_t)now.tv_sec * 1000000000ULL + now.tv_nsec;
+
+            // Auto-expire stale lock (owner was killed by Folk)
+            if (pipeWriteBusy && pipeWriteStartNs &&
+                (nowNs - pipeWriteStartNs > 200000000ULL)) {
+                __sync_lock_release(&pipeWriteBusy);
+            }
+
+            if (__sync_lock_test_and_set(&pipeWriteBusy, 1)) return 0; // busy
+            pipeWriteStartNs = nowNs;
+            return 1;
+        }
+
+        static void releasePipeWrite() {
+            pipeWriteStartNs = 0;
+            __sync_lock_release(&pipeWriteBusy);
+        }
+
+        // FPS tracking
+        static int zc_frame_count = 0;
+        static struct timespec zc_fps_start = {0, 0};
+
+        // Ensure SIGPIPE is ignored (once)
+        static int sigpipe_ignored = 0;
+        static void ignoreSigpipe() {
+            if (!sigpipe_ignored) {
+                signal(SIGPIPE, SIG_IGN);
+                sigpipe_ignored = 1;
+            }
+        }
+
+        // Non-blocking write: never blocks a Folk worker thread.
+        // Returns: 1 = success or skip (pipe still valid), 0 = pipe broken (caller should close).
+        // Poll timeout with no bytes sent → skip (pipe full, not broken).
+        // Poll timeout mid-frame → error (partial JPEG corrupts stream).
+        static int writeFull(int fd, const uint8_t* data, size_t len) {
+            ignoreSigpipe();
+
+            int flags = fcntl(fd, F_GETFL);
+            fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+            size_t total = 0;
+            while (total < len) {
+                struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+                int ready = poll(&pfd, 1, 50);
+                if (ready <= 0) {
+                    fcntl(fd, F_SETFL, flags);
+                    // No bytes sent yet → pipe just full, skip frame (not broken)
+                    // Mid-frame → partial JPEG in pipe, must close
+                    return (total == 0) ? 1 : 0;
+                }
+                if (pfd.revents & (POLLERR | POLLHUP)) { fcntl(fd, F_SETFL, flags); return 0; }
+
+                ssize_t written = write(fd, data + total, len - total);
+                if (written < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK) continue;
+                    fcntl(fd, F_SETFL, flags);
+                    return 0;
+                }
+                if (written == 0) { fcntl(fd, F_SETFL, flags); return 0; }
+                total += written;
+            }
+
+            // Restore blocking mode
+            fcntl(fd, F_SETFL, flags);
+            zc_frame_count++;
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (zc_fps_start.tv_sec == 0) zc_fps_start = now;
+            double elapsed = (now.tv_sec - zc_fps_start.tv_sec) +
+                             (now.tv_nsec - zc_fps_start.tv_nsec) / 1e9;
+            if (elapsed >= 10.0) {
+                fprintf(stderr, "stream: %.1f fps (%d frames in %.0fs)\n",
+                        zc_frame_count / elapsed, zc_frame_count, elapsed);
+                zc_frame_count = 0;
+                zc_fps_start = now;
+            }
+            return 1;
+        }
+
+        // Compress Image to JPEG in memory. Caller must tjFree(*outBuf).
+        static int compressToJpeg(Image* im, int quality,
+                                  unsigned char** outBuf, unsigned long* outSize) {
+            tjhandle h = tjInitCompress();
+            if (!h) return 0;
+
+            int pf, pitch;
+            uint8_t* srcData;
+            int needFree = 0;
+
+            if (im->components == 3) {
+                if (im->bytesPerRow == im->width * 3) {
+                    srcData = im->data;
+                } else {
+                    srcData = (uint8_t*)malloc(im->width * im->height * 3);
+                    for (uint32_t i = 0; i < im->height; i++)
+                        memcpy(srcData + i * im->width * 3,
+                               im->data + i * im->bytesPerRow, im->width * 3);
+                    needFree = 1;
+                }
+                pf = TJPF_RGB;
+                pitch = im->width * 3;
+            } else if (im->components == 1) {
+                srcData = (uint8_t*)malloc(im->width * im->height * 3);
+                for (uint32_t i = 0; i < im->height; i++)
+                    for (uint32_t j = 0; j < im->width; j++) {
+                        uint8_t g = im->data[i * im->bytesPerRow + j];
+                        srcData[(i * im->width + j) * 3 + 0] = g;
+                        srcData[(i * im->width + j) * 3 + 1] = g;
+                        srcData[(i * im->width + j) * 3 + 2] = g;
+                    }
+                needFree = 1;
+                pf = TJPF_RGB;
+                pitch = im->width * 3;
+            } else {
+                tjDestroy(h);
+                return 0;
+            }
+
+            *outBuf = NULL;
+            *outSize = 0;
+            int ret = tjCompress2(h, srcData, im->width, pitch, im->height, pf,
+                                  outBuf, outSize, TJSAMP_420, quality, TJFLAG_FASTDCT);
+            if (needFree) free(srcData);
+            tjDestroy(h);
+            return ret == 0;
+        }
+    }
+
+    # Write Jpeg struct directly to pipe — 1 copy (userspace → kernel)
+    # Atomic guard prevents interleaved frames from concurrent worker threads.
+    $cc2 proc writeJpegDirect {Jpeg jpeg int fd} int {
+        if (fd < 0) return 0;
+        if (!tryAcquirePipeWrite()) return 1; // busy, skip
+        int ok = writeFull(fd, jpeg.start, jpeg.length);
+        releasePipeWrite();
+        return ok;
+    }
+
+    # Compress Image to JPEG in memory and write to pipe — 2 copies (compress + write)
+    $cc2 proc writeImageAsJpeg {Image im int fd int quality} int {
+        if (fd < 0) return 0;
+        if (!tryAcquirePipeWrite()) return 1; // busy, skip
+        unsigned char* jpegBuf = NULL;
+        unsigned long jpegSize = 0;
+        if (!compressToJpeg(&im, quality, &jpegBuf, &jpegSize)) {
+            releasePipeWrite();
+            return 0;
+        }
+        int ok = writeFull(fd, jpegBuf, jpegSize);
+        tjFree(jpegBuf);
+        releasePipeWrite();
+        return ok;
+    }
+
+    # Cache Image as JPEG in slot (encode once, reuse). Thread-safe.
+    # Slot 0 = testcard, slot 1 = image handler.
+    $cc2 proc cacheImageAsJpeg {Image im int quality int slot} int {
+        if (slot < 0 || slot >= JPEG_CACHE_SLOTS) return 0;
+        JpegCacheSlot* s = &jpegCache[slot];
+
+        // Fast path: already cached (check without lock)
+        if (s->buf && s->uniq == im.uniq) return 1;
+
+        // Compress outside lock (expensive, don't hold mutex during compression)
+        unsigned char* jpegBuf = NULL;
+        unsigned long jpegSize = 0;
+        if (!compressToJpeg(&im, quality, &jpegBuf, &jpegSize)) return 0;
+
+        // Swap into cache under lock
+        pthread_mutex_lock(&jpegCacheMutex);
+        // Re-check: another thread may have cached while we were compressing
+        if (s->buf && s->uniq == im.uniq) {
+            pthread_mutex_unlock(&jpegCacheMutex);
+            tjFree(jpegBuf);  // discard our duplicate
+            return 1;
+        }
+        uint8_t* old = s->buf;
+        s->buf = jpegBuf;
+        s->size = jpegSize;
+        s->uniq = im.uniq;
+        pthread_mutex_unlock(&jpegCacheMutex);
+
+        if (old) tjFree(old);
+        fprintf(stderr, "JPEG cache slot %d: %lu bytes\n", slot, jpegSize);
+        return 1;
+    }
+
+    # Write cached JPEG bytes from slot to pipe — 1 copy (buffer → kernel)
+    # Trylock prevents interleaved frames from concurrent worker threads.
+    $cc2 proc writeCachedJpeg {int fd int slot} int {
+        if (fd < 0 || slot < 0 || slot >= JPEG_CACHE_SLOTS) return 0;
+        JpegCacheSlot* s = &jpegCache[slot];
+        if (!s->buf) return 0;
+
+        // Only one thread writes at a time — prevents interleaved JPEG frames
+        if (!tryAcquirePipeWrite()) return 1; // busy, skip
+        int ok = writeFull(fd, s->buf, s->size);
+        releasePipeWrite();
+        return ok;
+    }
+
+    # C-level throttle: returns 1 if too soon (skip), 0 if ready (proceed).
+    # No database overhead — uses clock_gettime instead of Query!/Hold!.
+    $cc2 proc shouldThrottleSlot {int slot int minIntervalMs} int {
+        if (slot < 0 || slot >= JPEG_CACHE_SLOTS) return 1;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        double elapsedMs = (now.tv_sec - lastSlotWrite[slot].tv_sec) * 1000.0 +
+                           (now.tv_nsec - lastSlotWrite[slot].tv_nsec) / 1e6;
+        if (elapsedMs < minIntervalMs) return 1;
+        lastSlotWrite[slot] = now;
+        return 0;
+    }
+
+    set streamJpegLib [$cc2 compile]
+    Claim the optimized stream library is $streamJpegLib
+}
+
+# Auto-start ffmpeg when requested
+When the video stream library is /streamLib/ &\
+     /someone/ wishes /streamName/ streams to /output/ with /...options/ {
+
+    # Extract options with defaults
+    set width [dict getdef $options width 640]
+    set height [dict getdef $options height 480]
+    set fps [dict getdef $options fps 30]
+    set format [dict getdef $options format "mjpeg"]  ;# mjpeg or raw
+
+    # Create pipe
+    set results [Query! /anybody/ claims stream $streamName has pipe created]
+    if {[llength $results] == 0} {
+        if {[$streamLib createStreamPipe $streamName]} {
+            Claim stream $streamName has pipe created
+            Claim stream $streamName uses format $format
+
+            # Auto-start ffmpeg
+            set pipePath "/tmp/folk-stream-$streamName.fifo"
+            if {[$streamLib startFfmpegReader $pipePath $width $height $fps $format $output]} {
+                Claim stream $streamName has ffmpeg running
+                puts "Stream $streamName ready! Format: $format, Streaming to: $output"
+            }
+        }
+    }
+}
+
+# Handle JPEG camera streaming (efficient - uses native JPEG from camera)
+When the video stream library is /streamLib/ &\
+     the image library is /imageLib/ &\
+     /someone/ wishes /streamName/ streams camera jpeg {
+
+    # Create pipe once
+    set results [Query! /anybody/ claims stream $streamName has pipe created]
+    if {[llength $results] == 0} {
+        if {[$streamLib createStreamPipe $streamName]} {
+            Claim stream $streamName has pipe created
+            Claim stream $streamName uses format "mjpeg"
+            puts "Stream pipe created for: $streamName (MJPEG mode)"
+            puts "Start ffmpeg with: -f image2pipe -codec:v mjpeg"
+        }
+    }
+
+    # Try to open pipe for writing
+    When stream $streamName has pipe created {
+        if {[$streamLib openStreamPipe]} {
+            Claim stream $streamName is ready
+        }
+    }
+
+    # Stream JPEG frames when ready
+    When stream $streamName is ready &\
+         camera /cam/ has jpeg frame /jpeg/ at timestamp /ts/ {
+
+        # Throttle from 60fps camera to 30fps stream
+        set targetFps 30
+        set frameNum [expr {int($ts * $targetFps)}]
+        set lastFrame [Query! stream $streamName last sent frame /f/]
+
+        if {[llength $lastFrame] == 0 || [dict get [lindex $lastFrame 0] f] != $frameNum} {
+            # Get JPEG data and send it
+            set jpegData [$imageLib jpegData $jpeg]
+            if {[$streamLib writeJpegData $jpegData]} {
+                Hold! -keep 100ms -key stream:$streamName:last \
+                    Claim stream $streamName last sent frame $frameNum
+            } else {
+                # Pipe closed, clear ready state
+                Hold! -key stream:$streamName:ready {}
+                puts "Stream pipe closed, waiting for reader..."
+            }
+        }
+    }
+}
+
+# Handle raw RGB camera streaming (fallback - less efficient)
+When the video stream library is /streamLib/ &\
+     /someone/ wishes /streamName/ streams camera frames {
+
+    # Create pipe once
+    set results [Query! /anybody/ claims stream $streamName has pipe created]
+    if {[llength $results] == 0} {
+        if {[$streamLib createStreamPipe $streamName]} {
+            Claim stream $streamName has pipe created
+            Claim stream $streamName uses format "raw"
+            puts "Stream pipe created for: $streamName (raw RGB mode)"
+            puts "Start ffmpeg listener manually, or use:"
+            puts "  Wish \"$streamName\" streams to \"udp://localhost:8081\""
+        }
+    }
+
+    # Try to open pipe for writing
+    When stream $streamName has pipe created {
+        if {[$streamLib openStreamPipe]} {
+            Claim stream $streamName is ready
+        }
+    }
+
+    # Stream color frames when ready
+    When stream $streamName is ready &\
+         camera /cam/ has color frame /frame/ at timestamp /ts/ {
+
+        # Throttle from 60fps camera to 30fps stream
+        set targetFps 30
+        set frameNum [expr {int($ts * $targetFps)}]
+        set lastFrame [Query! stream $streamName last sent frame /f/]
+
+        if {[llength $lastFrame] == 0 || [dict get [lindex $lastFrame 0] f] != $frameNum} {
+            if {[$streamLib writeRawFrame $frame]} {
+                Hold! -keep 100ms -key stream:$streamName:last \
+                    Claim stream $streamName last sent frame $frameNum
+            } else {
+                # Pipe closed, clear ready state
+                Hold! -key stream:$streamName:ready {}
+                puts "Stream pipe closed, waiting for reader..."
+            }
+        }
+    }
+}
+
+# Handle HLS streaming via systemd-managed pipe (zero-copy: Jpeg → pipe)
+# Usage: Wish "hls" streams camera jpeg to hls
+# Requires: sudo systemctl start folk-hls-stream
+When the video stream library is /streamLib/ &\
+     the optimized stream library is /streamJpegLib/ &\
+     /someone/ wishes /streamName/ streams camera jpeg to hls {
+
+    set pipePath "/tmp/folk-stream-hls.fifo"
+
+    # Try to connect to systemd-managed pipe
+    if {[$streamLib connectPipe $pipePath]} {
+        Claim stream $streamName has pipe created
+        Claim stream $streamName uses format "mjpeg"
+        Claim stream $streamName is ready
+        puts "Connected to HLS pipe. View at: http://<hostname>:4888/tmp/folk-hls/stream.m3u8"
+    }
+
+    # Stream JPEG frames when connected — writeJpegDirect skips Tcl string copy
+    When stream $streamName is ready &\
+         camera /cam/ has jpeg frame /jpeg/ at timestamp /ts/ {
+
+        set targetFps 30
+        set frameNum [expr {int($ts * $targetFps)}]
+        set lastFrame [Query! stream $streamName last sent frame /f/]
+
+        if {[llength $lastFrame] == 0 || [dict get [lindex $lastFrame 0] f] != $frameNum} {
+            set fd [$streamLib getStreamFd]
+            if {[$streamJpegLib writeJpegDirect $jpeg $fd]} {
+                Hold! -keep 100ms -key stream:$streamName:last \
+                    Claim stream $streamName last sent frame $frameNum
+            } else {
+                $streamLib closeStream
+                Hold! -key stream:$streamName:ready {}
+                puts "HLS pipe closed. Is folk-hls-stream.service running?"
+            }
+        }
+    }
+}
+
+# Handle image streaming (for media cards)
+# IMPORTANT: Still images must be continuously sent at stream framerate
+# or the stream will freeze/disconnect!
+When the video stream library is /streamLib/ &\
+     /someone/ wishes /streamName/ streams image /image/ {
+
+    # Create pipe if needed
+    set results [Query! /anybody/ claims stream $streamName has pipe created]
+    if {[llength $results] == 0} {
+        if {[$streamLib createStreamPipe $streamName]} {
+            Claim stream $streamName has pipe created
+        }
+    }
+
+    # Hold the image as the current frame
+    Hold! -keep 100ms -key stream:$streamName:current-image \
+        Claim stream $streamName has current image $image
+
+    # Continuously send the current image at ~30fps
+    When stream $streamName has pipe created &\
+         stream $streamName has current image /currentImage/ {
+
+        if {[$streamLib openStreamPipe]} {
+            # Send same frame repeatedly to maintain stream
+            $streamLib writeRawFrame $currentImage
+        }
+    }
+}
+
+# Stream any Image to HLS via JPEG encoding
+# Usage: Wish "hls" streams image $im to hls
+# Requires: sudo systemctl start folk-hls-stream
+#
+# Throttle uses C-level clock_gettime (no Query!/Hold! database overhead).
+# Limits compression + writes to ~10fps to avoid swamping worker threads.
+When the video stream library is /streamLib/ &\
+     the optimized stream library is /streamJpegLib/ &\
+     /someone/ wishes /streamName/ streams image /image/ to hls {
+
+    set pipePath "/tmp/folk-stream-hls.fifo"
+    if {![$streamLib connectPipe $pipePath]} { return }
+
+    # C-level throttle: skip entirely if <100ms since last write (slot 1).
+    # Returns immediately — no database ops, no C FFI compression.
+    # if {[$streamJpegLib shouldThrottleSlot 1 10]} return
+
+    # Compress (or hit cache) and write
+    $streamJpegLib cacheImageAsJpeg $image 80 1
+    set fd [$streamLib getStreamFd]
+    if {[$streamJpegLib writeCachedJpeg $fd 1]} {
+        $streamLib markStreamActive
+    } else {
+        $streamLib closeStream
+    }
+}
+
+# Testcard fallback for HLS — show when nobody is streaming
+# JPEG is encoded once and cached in slot 0; writes throttled to ~10fps.
+When the video stream library is /streamLib/ &\
+     the optimized stream library is /streamJpegLib/ &\
+     the image loader is /loadImage/ &\
+     /nobody/ wishes /something/ streams image /something/ to hls {
+
+    # Skip if real content was written recently (via base library — shared
+    # across all $cc2 instances). Prevents testcard during reactive-cycle gaps.
+    if {[$streamLib isStreamRecentlyActive 500]} return
+
+    # C-level throttle (slot 0) — skip if <100ms since last write
+    if {[$streamJpegLib shouldThrottleSlot 0 100]} return
+
+    set testcard [{*}$loadImage "1920px/testcard.jpg"]
+    $streamJpegLib cacheImageAsJpeg $testcard 80 0
+
+    set pipePath "/tmp/folk-stream-hls.fifo"
+    if {[$streamLib connectPipe $pipePath]} {
+        set fd [$streamLib getStreamFd]
+        if {![$streamJpegLib writeCachedJpeg $fd 0]} {
+            $streamLib closeStream
+        }
+    }
+}
+
+# Cleanup on program unload
+Subscribe: program $this will stop {
+    Notify: cleanup streams
+}
+
+Subscribe: cleanup streams {
+    if {[info exists streamLib]} {
+        $streamLib stopFfmpeg
+        $streamLib closeStream
+    }
+}
+
+puts "Video streamer loaded."
+puts ""
+puts "HLS mode (systemd):"
+puts "  sudo systemctl start folk-hls-stream"
+puts "  Wish \"hls\" streams camera jpeg to hls"
+puts "  View: http://<hostname>:4888/tmp/folk-hls/stream.m3u8"
+puts ""
+puts "Auto-start (Folk spawns ffmpeg):"
+puts "  Wish \"my-stream\" streams to \"udp://localhost:8081\""
+puts ""
+puts "Manual MJPEG:"
+puts "  Wish \"my-stream\" streams camera jpeg"

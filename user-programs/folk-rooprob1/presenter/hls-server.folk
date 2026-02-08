@@ -1,0 +1,180 @@
+# HLS Server - Serve HLS stream segments via Folk's web server
+# Adds /stream route for viewing the live HLS stream
+
+set this hls-server
+
+set hlsDir "/tmp/folk-hls"
+
+
+# Serve HLS playlist (.m3u8)
+Wish the web server handles route "/stream/stream.m3u8" with handler [subst -nocommands {
+    set hlsDir "$hlsDir"
+    set path "\$hlsDir/stream.m3u8"
+
+    if {![file exists \$path]} {
+        dict create statusAndHeaders "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n" \
+            body "HLS stream not active. Start with: sudo systemctl start folk-hls-stream"
+    } else {
+        set fp [open \$path r]
+        set data [read \$fp]
+        close \$fp
+
+        dict create statusAndHeaders "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.apple.mpegurl\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: [string length \$data]\r\n\r\n" \
+            body \$data
+    }
+}]
+
+# Serve HLS segments (.ts)
+Wish the web server handles route {/stream/(segment_[0-9]+\.ts)$} with handler [subst -nocommands {
+    set hlsDir "$hlsDir"
+    set segment \$1
+    set path "\$hlsDir/\$segment"
+
+    if {![file exists \$path]} {
+        dict create statusAndHeaders "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n" \
+            body "Segment not found"
+    } else {
+        set fp [open \$path rb]
+        set data [read \$fp]
+        close \$fp
+        set fsize [string bytelength \$data]
+
+        dict create statusAndHeaders "HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nConnection: close\r\nContent-Length: \$fsize\r\n\r\n" \
+            body \$data
+    }
+}]
+
+# Web player page
+Wish the web server handles route "/stream" with nav "<button>Stream</button>" handler {
+    dict create statusAndHeaders "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n" body {
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Folk Live Stream</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #111;
+            color: #eee;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            padding: 1em;
+        }
+        h1 { margin-bottom: 0.5em; }
+        #status {
+            padding: 0.5em 1em;
+            margin-bottom: 1em;
+            border-radius: 4px;
+            font-size: 0.9em;
+        }
+        .connecting { background: #553; }
+        .live { background: #353; }
+        .error { background: #533; }
+        video {
+            max-width: 100%;
+            max-height: 80vh;
+            background: #000;
+            border: 1px solid #333;
+        }
+        .controls {
+            margin-top: 1em;
+            display: flex;
+            gap: 1em;
+        }
+        button {
+            background: #333;
+            color: #eee;
+            border: 1px solid #555;
+            padding: 0.5em 1em;
+            cursor: pointer;
+            font-family: monospace;
+            border-radius: 4px;
+        }
+        button:hover { background: #444; }
+    </style>
+</head>
+<body>
+    <h1>Folk Live Stream</h1>
+    <div id="status" class="connecting">Connecting...</div>
+    <video id="video" autoplay muted playsinline></video>
+    <div class="controls">
+        <button onclick="toggleMute()">Unmute</button>
+        <button onclick="goFullscreen()">Fullscreen</button>
+        <button onclick="location.reload()">Reconnect</button>
+    </div>
+
+    <script>
+    const video = document.getElementById('video');
+    const status = document.getElementById('status');
+    const streamUrl = '/stream/stream.m3u8';
+
+    function updateStatus(text, cls) {
+        status.textContent = text;
+        status.className = cls;
+    }
+
+    function toggleMute() {
+        video.muted = !video.muted;
+        event.target.textContent = video.muted ? 'Unmute' : 'Mute';
+    }
+
+    function goFullscreen() {
+        if (video.requestFullscreen) video.requestFullscreen();
+    }
+
+    if (Hls.isSupported()) {
+        const hls = new Hls({
+            enableWorker: true,
+            lowLatencyMode: true,
+            liveSyncDurationCount: 1,
+            liveMaxLatencyDurationCount: 3,
+            liveDurationInfinity: true,
+            highBufferWatchdogPeriod: 1,
+        });
+
+        hls.loadSource(streamUrl);
+        hls.attachMedia(video);
+
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+            updateStatus('LIVE', 'live');
+            video.play();
+        });
+
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.fatal) {
+                updateStatus('Stream error - retrying...', 'error');
+                setTimeout(() => {
+                    hls.loadSource(streamUrl);
+                }, 2000);
+            }
+        });
+
+        // Auto-retry if stream not yet available
+        hls.on(Hls.Events.ERROR, (event, data) => {
+            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                updateStatus('Waiting for stream...', 'connecting');
+                setTimeout(() => hls.loadSource(streamUrl), 3000);
+            }
+        });
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        // Safari native HLS
+        video.src = streamUrl;
+        video.addEventListener('loadedmetadata', () => {
+            updateStatus('LIVE', 'live');
+            video.play();
+        });
+    } else {
+        updateStatus('HLS not supported in this browser', 'error');
+    }
+    </script>
+</body>
+</html>
+    }
+}
+
+puts "HLS server loaded. Web player at: http://<hostname>:4273/stream"
