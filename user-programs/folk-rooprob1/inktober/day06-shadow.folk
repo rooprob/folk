@@ -1,0 +1,91 @@
+# Day 06: Shadow
+# A card becomes a shadow puppet. A silhouette drawn on the card casts
+# an enlarged shadow onto the table, distorted by card tilt.
+# A fixed virtual light source above determines shadow direction and stretch.
+#
+# Enable: Place a card with "Wish $this is a shadow puppet"
+
+set this day06-shadow
+
+When /someone/ wishes /card/ is a shadow puppet &\
+     tag /card/ has quad /quad/ &\
+     /card/ has resolved geometry /geom/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     display /disp/ has intrinsics /intrinsics/ &\
+     display /disp/ has width /w/ height /h/ &\
+     the pose library is /poseLib/ {
+
+    dict with geom {}
+    fn quadChange
+
+    # --- Puppet silhouette in normalized card coords (0-1) ---
+    # Simple bird shape as separate polylines
+    set shapes {}
+    # Body outline
+    lappend shapes [list \
+        {0.50 0.65} {0.38 0.52} {0.35 0.40} {0.40 0.28} \
+        {0.50 0.20} {0.60 0.28} {0.65 0.40} {0.62 0.52} {0.50 0.65}]
+    # Left wing
+    lappend shapes [list \
+        {0.35 0.42} {0.18 0.28} {0.08 0.38} {0.22 0.50} {0.35 0.52}]
+    # Right wing
+    lappend shapes [list \
+        {0.65 0.42} {0.82 0.28} {0.92 0.38} {0.78 0.50} {0.65 0.52}]
+    # Beak
+    lappend shapes [list {0.47 0.20} {0.42 0.12} {0.53 0.17}]
+
+    # --- Draw silhouette on card (page space) ---
+    foreach shape $shapes {
+        set pts {}
+        foreach pt $shape {
+            lassign $pt nu nv
+            lappend pts [list [expr {$nu * $width}] [expr {$nv * $height}]]
+        }
+        Wish to draw a line onto $card with \
+            points $pts width 0.004 color white
+    }
+
+    # --- Project shadow onto display ---
+    set displayQuad [quadChange $quad "display $disp"]
+    lassign [$quadLib vertices $displayQuad] dtl dtr dbr dbl
+
+    # Card center on screen (for light position reference)
+    set cc3d [list \
+        [expr {([lindex $dtl 0]+[lindex $dtr 0]+[lindex $dbr 0]+[lindex $dbl 0])/4.0}] \
+        [expr {([lindex $dtl 1]+[lindex $dtr 1]+[lindex $dbr 1]+[lindex $dbl 1])/4.0}] \
+        [expr {([lindex $dtl 2]+[lindex $dtr 2]+[lindex $dbr 2]+[lindex $dbl 2])/4.0}]]
+    lassign [$poseLib project $intrinsics $w $h $cc3d] ccSx ccSy
+
+    # Light source: fixed above card center on screen
+    set lightX $ccSx
+    set lightY [expr {$ccSy - 250}]
+    set shadowScale 2.5
+
+    foreach shape $shapes {
+        set shadowPts {}
+        foreach pt $shape {
+            lassign $pt nu nv
+            # Bilinear interpolation: normalized (u,v) → display 3D
+            set px [expr {(1-$nu)*(1-$nv)*[lindex $dtl 0] + $nu*(1-$nv)*[lindex $dtr 0] \
+                        + $nu*$nv*[lindex $dbr 0] + (1-$nu)*$nv*[lindex $dbl 0]}]
+            set py [expr {(1-$nu)*(1-$nv)*[lindex $dtl 1] + $nu*(1-$nv)*[lindex $dtr 1] \
+                        + $nu*$nv*[lindex $dbr 1] + (1-$nu)*$nv*[lindex $dbl 1]}]
+            set pz [expr {(1-$nu)*(1-$nv)*[lindex $dtl 2] + $nu*(1-$nv)*[lindex $dtr 2] \
+                        + $nu*$nv*[lindex $dbr 2] + (1-$nu)*$nv*[lindex $dbl 2]}]
+
+            lassign [$poseLib project $intrinsics $w $h [list $px $py $pz]] sx sy
+
+            # Scale point away from light source
+            set shadowX [expr {$lightX + ($sx - $lightX) * $shadowScale}]
+            set shadowY [expr {$lightY + ($sy - $lightY) * $shadowScale}]
+
+            lappend shadowPts [list $shadowX $shadowY]
+        }
+
+        Wish to draw a line onto $disp with \
+            points $shadowPts width 25 color {0.5 0.5 0.5 0.5}
+    }
+
+    Wish $card is outlined yellow
+}
