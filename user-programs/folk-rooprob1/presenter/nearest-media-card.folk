@@ -26,6 +26,11 @@ When /someone/ wishes /presenter/ is a presentation &\
    ForEach! /card/ is a mediacard with /...options/ &\
         tag /card/ has plane position /cardPos/ {
         set dist [{*}$distCalc $presenterPos $cardPos]
+
+        set precision 3
+        set float $dist
+        set dist  [expr {round( 10 ** $precision * $float) / (10.0 ** $precision)} ]
+
         if {$dist < $closestDistance} {
             set closestDistance $dist
             set closestCard $card
@@ -80,7 +85,7 @@ When /presenter/ is debugging mediacard with live camera &\
         width [* $page_width 0.6]
 
     # Stream to HLS (requires: sudo systemctl start folk-hls-stream)
-    #Wish "hls" streams image $im to hls
+    Wish "hls" streams image $im to hls
 }
 
 # Display the closest card's image on the presenter
@@ -92,14 +97,14 @@ When /presenter/ is closest to card /card/ at distance /distance/ &\
     set page_height [dict get $geom height]
     set page_center [list [/ $page_width 2] [/ $page_height 2]]
 
-    Wish to draw an image onto $presenter with \
+    Wish -keep 100ms to draw an image onto $presenter with \
         position $page_center \
         image $im \
         anchor center \
         width [* $page_width 0.6]
 
     # Stream to HLS (requires: sudo systemctl start folk-hls-stream)
-    #Wish "hls" streams image $im to hls
+    Wish "hls" streams image $im to hls
 }
 
 # Highlight closest card when within 30cm

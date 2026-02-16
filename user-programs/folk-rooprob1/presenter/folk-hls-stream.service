@@ -1,5 +1,5 @@
 [Unit]
-Description=Folk HLS Video Stream
+Description=Folk HLS Video Stream (via folk-stream-mux)
 Documentation=file:///home/folk/folk2/user-programs/folk-rooprob1/presenter/STREAMING-GUIDE.md
 After=folk2.service
 Wants=folk2.service
@@ -9,49 +9,62 @@ Type=simple
 User=folk
 Group=folk
 
-# Create HLS output directory and named pipe
+# Create HLS output directory and mux input FIFOs
 ExecStartPre=/bin/bash -c 'mkdir -p /tmp/folk-hls && rm -f /tmp/folk-hls/*.ts /tmp/folk-hls/*.m3u8'
-ExecStartPre=/bin/bash -c 'test -p /tmp/folk-stream-hls.fifo || mkfifo /tmp/folk-stream-hls.fifo'
+ExecStartPre=/bin/bash -c 'for i in 0 1; do test -p /tmp/folk-mux-$i.fifo || mkfifo /tmp/folk-mux-$i.fifo; done'
+ExecStartPre=/bin/bash -c 'test -p /tmp/folk-mux-ctl.fifo || mkfifo /tmp/folk-mux-ctl.fifo'
 
-# ffmpeg: read MJPEG from pipe, output HLS segments
-# -fflags nobuffer: don't buffer demuxer input (reduce startup delay)
-# -flush_packets 1: flush encoder output immediately
-# -use_wallclock_as_timestamps: derive timing from wall clock (tolerates jittery input)
-# -vsync cfr: constant frame rate output (duplicates/drops to smooth jitter)
-ExecStart=/usr/bin/ffmpeg \
-    -loglevel warning \
-    -fflags nobuffer \
-    -use_wallclock_as_timestamps 1 \
-    -f image2pipe \
-    -codec:v mjpeg \
-    -framerate 10 \
-    -i /tmp/folk-stream-hls.fifo \
-    -flush_packets 1 \
-    -vsync cfr \
-    -r 15 \
-    -codec:v libx264 \
-    -tune zerolatency \
-    -preset ultrafast \
-    -profile:v baseline \
-    -pix_fmt yuv420p \
-    -g 15 \
-    -sc_threshold 0 \
-    -b:v 1500k \
-    -maxrate 1500k \
-    -bufsize 1500k \
-    -f hls \
-    -hls_time 1 \
-    -hls_list_size 3 \
-    -hls_flags delete_segments+append_list \
-    -hls_segment_type mpegts \
-    -hls_segment_filename /tmp/folk-hls/segment_%%03d.ts \
-    /tmp/folk-hls/stream.m3u8
+# Build mux if needed
+ExecStartPre=/bin/bash -c 'MUX=/home/folk/folk2/user-programs/folk-rooprob1/presenter/folk-stream-mux; SRC=$MUX.c; test -x $MUX && test $MUX -nt $SRC || gcc -O2 -o $MUX $SRC'
+
+# Pipeline: folk-stream-mux reads mux FIFOs → stdout MJPEG → ffmpeg → HLS
+#
+# folk-stream-mux:
+#   -n 2: two input FIFOs (/tmp/folk-mux-{0,1}.fifo)
+#   -f 10: target 10fps output
+#   -T 500: source timeout 500ms (fall silent if no input)
+#
+# ffmpeg:
+#   -fflags nobuffer: don't buffer demuxer input
+#   -flush_packets 1: flush encoder output immediately
+#   -tune zerolatency: disable H.264 lookahead
+#   -use_wallclock_as_timestamps: derive timing from wall clock
+ExecStart=/bin/bash -c '\
+    /home/folk/folk2/user-programs/folk-rooprob1/presenter/folk-stream-mux \
+        -n 2 -f 10 -T 500 | \
+    /usr/bin/ffmpeg \
+        -loglevel warning \
+        -fflags nobuffer \
+        -use_wallclock_as_timestamps 1 \
+        -f image2pipe \
+        -codec:v mjpeg \
+        -framerate 10 \
+        -i pipe:0 \
+        -flush_packets 1 \
+        -vsync cfr \
+        -r 15 \
+        -codec:v libx264 \
+        -tune zerolatency \
+        -preset ultrafast \
+        -profile:v baseline \
+        -pix_fmt yuv420p \
+        -g 15 \
+        -sc_threshold 0 \
+        -b:v 1500k \
+        -maxrate 1500k \
+        -bufsize 1500k \
+        -f hls \
+        -hls_time 1 \
+        -hls_list_size 3 \
+        -hls_flags delete_segments+append_list \
+        -hls_segment_type mpegts \
+        -hls_segment_filename /tmp/folk-hls/segment_%%03d.ts \
+        /tmp/folk-hls/stream.m3u8'
 
 # Clean up on stop
-ExecStopPost=/bin/bash -c 'rm -f /tmp/folk-hls/*.ts /tmp/folk-hls/*.m3u8'
+ExecStopPost=/bin/bash -c 'rm -f /tmp/folk-hls/*.ts /tmp/folk-hls/*.m3u8 /tmp/folk-mux-*.fifo /tmp/folk-mux-ctl.fifo'
 
-Restart=on-failure
-RestartSec=2
+Restart=always
 
 [Install]
 WantedBy=multi-user.target

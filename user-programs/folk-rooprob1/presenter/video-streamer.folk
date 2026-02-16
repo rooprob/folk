@@ -38,10 +38,11 @@ $cc code {
     static int stream_frame_count = 0;
     static struct timespec stream_fps_start = {0, 0};
 
-    // Track when "real" content last wrote to the pipe.
-    // Used by testcard fallback to suppress during brief reactive-cycle gaps.
-    // Lives in the base library (single instance) so all $cc2 instances share it.
-    static struct timespec lastRealContentWrite = {0, 0};
+    // Mux input FIFO management (write side).
+    // Each slot writes to /tmp/folk-mux-{N}.fifo, read by folk-stream-mux.
+    #define MUX_MAX_INPUTS 4
+    static int mux_fds[MUX_MAX_INPUTS] = {-1, -1, -1, -1};
+    static int mux_ctl_fd = -1;
 
     // Image struct (matches image-lib definition)
     typedef struct {
@@ -255,19 +256,50 @@ $cc proc isStreamOpen {} int {
     return stream_fd >= 0;
 }
 
-# Mark that real content was just written (call after successful image write)
-$cc proc markStreamActive {} void {
-    clock_gettime(CLOCK_MONOTONIC, &lastRealContentWrite);
+# Open a mux input FIFO for writing. Returns 1 on success / already open.
+# Requires folk-stream-mux to be running (creates the FIFOs).
+$cc proc openMuxInput {int slot char* path} int {
+    if (slot < 0 || slot >= MUX_MAX_INPUTS) return 0;
+    if (mux_fds[slot] >= 0) return 1;
+
+    struct stat st;
+    if (stat(path, &st) != 0 || !S_ISFIFO(st.st_mode)) return 0;
+
+    mux_fds[slot] = open(path, O_WRONLY | O_NONBLOCK);
+    if (mux_fds[slot] < 0) return 0;
+
+    fcntl(mux_fds[slot], F_SETPIPE_SZ, 1048576);
+    fprintf(stderr, "mux input %d: connected to %s (buf=%dKB)\n",
+            slot, path, fcntl(mux_fds[slot], F_GETPIPE_SZ) / 1024);
+    return 1;
 }
 
-# Check if real content was written within windowMs (for testcard suppression)
-$cc proc isStreamRecentlyActive {int windowMs} int {
-    if (lastRealContentWrite.tv_sec == 0 && lastRealContentWrite.tv_nsec == 0) return 0;
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    double elapsedMs = (now.tv_sec - lastRealContentWrite.tv_sec) * 1000.0 +
-                       (now.tv_nsec - lastRealContentWrite.tv_nsec) / 1e6;
-    return elapsedMs < windowMs;
+$cc proc getMuxFd {int slot} int {
+    if (slot < 0 || slot >= MUX_MAX_INPUTS) return -1;
+    return mux_fds[slot];
+}
+
+$cc proc closeMuxInput {int slot} void {
+    if (slot < 0 || slot >= MUX_MAX_INPUTS) return;
+    if (mux_fds[slot] >= 0) {
+        close(mux_fds[slot]);
+        mux_fds[slot] = -1;
+        fprintf(stderr, "mux input %d: closed\n", slot);
+    }
+}
+
+# Send a control command to the mux (e.g. "source 0", "testcard", "auto")
+$cc proc sendMuxControl {char* cmd} int {
+    if (mux_ctl_fd < 0) {
+        struct stat st;
+        if (stat("/tmp/folk-mux-ctl.fifo", &st) != 0 || !S_ISFIFO(st.st_mode)) return 0;
+        mux_ctl_fd = open("/tmp/folk-mux-ctl.fifo", O_WRONLY | O_NONBLOCK);
+        if (mux_ctl_fd < 0) return 0;
+    }
+    char buf[256];
+    int len = snprintf(buf, sizeof(buf), "%s\n", cmd);
+    write(mux_ctl_fd, buf, len);
+    return 1;
 }
 
 # Get stream fd (for zero-copy writes from other C libs)
@@ -381,7 +413,6 @@ When the image library is /imageLib/ {
         #include <pthread.h>
 
         // Multi-slot JPEG cache with mutex (thread-safe).
-        // Slot 0 = testcard, slot 1 = image handler.
         #define JPEG_CACHE_SLOTS 4
         typedef struct {
             uint8_t* buf;
@@ -390,9 +421,6 @@ When the image library is /imageLib/ {
         } JpegCacheSlot;
         static JpegCacheSlot jpegCache[JPEG_CACHE_SLOTS] = {{0}};
         static pthread_mutex_t jpegCacheMutex = PTHREAD_MUTEX_INITIALIZER;
-
-        // Per-slot write throttle (C-level, no database overhead)
-        static struct timespec lastSlotWrite[JPEG_CACHE_SLOTS] = {{0}};
 
         // Pipe write guard: prevents interleaved JPEG frames from concurrent
         // worker threads. Uses atomic flag instead of mutex because Folk's
@@ -608,19 +636,6 @@ When the image library is /imageLib/ {
         return ok;
     }
 
-    # C-level throttle: returns 1 if too soon (skip), 0 if ready (proceed).
-    # No database overhead — uses clock_gettime instead of Query!/Hold!.
-    $cc2 proc shouldThrottleSlot {int slot int minIntervalMs} int {
-        if (slot < 0 || slot >= JPEG_CACHE_SLOTS) return 1;
-        struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
-        double elapsedMs = (now.tv_sec - lastSlotWrite[slot].tv_sec) * 1000.0 +
-                           (now.tv_nsec - lastSlotWrite[slot].tv_nsec) / 1e6;
-        if (elapsedMs < minIntervalMs) return 1;
-        lastSlotWrite[slot] = now;
-        return 0;
-    }
-
     set streamJpegLib [$cc2 compile]
     Claim the optimized stream library is $streamJpegLib
 }
@@ -812,58 +827,27 @@ When the video stream library is /streamLib/ &\
     }
 }
 
-# Stream any Image to HLS via JPEG encoding
+# Stream any Image to HLS via folk-stream-mux
 # Usage: Wish "hls" streams image $im to hls
-# Requires: sudo systemctl start folk-hls-stream
+# Requires: sudo systemctl start folk-hls-stream (runs mux + ffmpeg)
 #
-# Throttle uses C-level clock_gettime (no Query!/Hold! database overhead).
-# Limits compression + writes to ~10fps to avoid swamping worker threads.
+# Folk compresses to JPEG and writes to mux input FIFO 0.
+# The mux handles source selection, testcard fallback, FPS, and output.
 When the video stream library is /streamLib/ &\
      the optimized stream library is /streamJpegLib/ &\
      /someone/ wishes /streamName/ streams image /image/ to hls {
 
-    set pipePath "/tmp/folk-stream-hls.fifo"
-    if {![$streamLib connectPipe $pipePath]} { return }
+    if {![$streamLib openMuxInput 0 "/tmp/folk-mux-0.fifo"]} return
 
-    # C-level throttle: skip entirely if <100ms since last write (slot 1).
-    # Returns immediately — no database ops, no C FFI compression.
-    # if {[$streamJpegLib shouldThrottleSlot 1 10]} return
-
-    # Compress (or hit cache) and write
+    # Compress (or hit cache) and write to mux input FIFO
     $streamJpegLib cacheImageAsJpeg $image 80 1
-    set fd [$streamLib getStreamFd]
-    if {[$streamJpegLib writeCachedJpeg $fd 1]} {
-        $streamLib markStreamActive
-    } else {
-        $streamLib closeStream
+    set fd [$streamLib getMuxFd 0]
+    if {![$streamJpegLib writeCachedJpeg $fd 1]} {
+        $streamLib closeMuxInput 0
     }
 }
 
-# Testcard fallback for HLS — show when nobody is streaming
-# JPEG is encoded once and cached in slot 0; writes throttled to ~10fps.
-When the video stream library is /streamLib/ &\
-     the optimized stream library is /streamJpegLib/ &\
-     the image loader is /loadImage/ &\
-     /nobody/ wishes /something/ streams image /something/ to hls {
-
-    # Skip if real content was written recently (via base library — shared
-    # across all $cc2 instances). Prevents testcard during reactive-cycle gaps.
-    if {[$streamLib isStreamRecentlyActive 500]} return
-
-    # C-level throttle (slot 0) — skip if <100ms since last write
-    if {[$streamJpegLib shouldThrottleSlot 0 100]} return
-
-    set testcard [{*}$loadImage "1920px/testcard.jpg"]
-    $streamJpegLib cacheImageAsJpeg $testcard 80 0
-
-    set pipePath "/tmp/folk-stream-hls.fifo"
-    if {[$streamLib connectPipe $pipePath]} {
-        set fd [$streamLib getStreamFd]
-        if {![$streamJpegLib writeCachedJpeg $fd 0]} {
-            $streamLib closeStream
-        }
-    }
-}
+# Testcard is handled by folk-stream-mux (built-in, no Folk handler needed)
 
 # Cleanup on program unload
 Subscribe: program $this will stop {
@@ -874,18 +858,16 @@ Subscribe: cleanup streams {
     if {[info exists streamLib]} {
         $streamLib stopFfmpeg
         $streamLib closeStream
+        $streamLib closeMuxInput 0
+        $streamLib closeMuxInput 1
     }
 }
 
 puts "Video streamer loaded."
 puts ""
-puts "HLS mode (systemd):"
+puts "HLS mode (via folk-stream-mux):"
 puts "  sudo systemctl start folk-hls-stream"
-puts "  Wish \"hls\" streams camera jpeg to hls"
-puts "  View: http://<hostname>:4888/tmp/folk-hls/stream.m3u8"
+puts "  Wish \"hls\" streams image \$im to hls"
+puts "  View: http://<hostname>:4273/stream"
 puts ""
-puts "Auto-start (Folk spawns ffmpeg):"
-puts "  Wish \"my-stream\" streams to \"udp://localhost:8081\""
-puts ""
-puts "Manual MJPEG:"
-puts "  Wish \"my-stream\" streams camera jpeg"
+puts "Mux control: echo 'source 0' > /tmp/folk-mux-ctl.fifo"
