@@ -92,7 +92,7 @@ deps:
 
 	if [ "$$(uname)" = "Darwin" ]; then \
 		install_name_tool -id @executable_path/vendor/apriltag/build/libapriltag.dylib vendor/apriltag/build/libapriltag.dylib; \
-		cd vendor/apriltag/build && ln -sf libapriltag.dylib libapriltag.so; \
+		cd vendor/apriltag/build && ln -sf libapriltag.dylib libapriltag.so; cd -; \
 		install_name_tool -id @executable_path/vendor/wslay/lib/.libs/libwslay.0.dylib vendor/wslay/lib/.libs/libwslay.0.dylib; \
 	fi
 	if [ "$$(uname)" = "Linux" ]; then \
@@ -119,6 +119,7 @@ sync:
 		--archive --delete --itemize-changes \
 		--exclude='/.git' \
 		--exclude-from='.git/ignores.tmp' \
+		--exclude='vendor/tracy/public/TracyClient.o' \
 		--include='vendor/tracy/public/***' \
 		--exclude='vendor/tracy/*' \
 		./ $(FOLK_REMOTE_NODE):~/folk/
