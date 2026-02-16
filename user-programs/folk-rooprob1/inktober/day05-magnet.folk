@@ -1,0 +1,208 @@
+# Day 05: Magnet
+# A card filled with small iron "atoms" (lines) that align with the magnetic
+# field from any magnet card on the table. Semi-visible field lines emanate
+# from the magnet.
+#
+# Iron card: "Wish $this has iron atoms"
+# Magnet card: "Wish $this is a magnet"
+
+set this day05-magnet
+
+# --- Magnet card: claims field source ---
+When /someone/ wishes /card/ is a magnet &\
+     tag /card/ has quad /quad/ &\
+     the quad library is /quadLib/ {
+
+    lassign [$quadLib vertices $quad] tl tr br bl
+
+    set center [list \
+        [expr {([lindex $tl 0]+[lindex $tr 0]+[lindex $br 0]+[lindex $bl 0])/4.0}] \
+        [expr {([lindex $tl 1]+[lindex $tr 1]+[lindex $br 1]+[lindex $bl 1])/4.0}] \
+        [expr {([lindex $tl 2]+[lindex $tr 2]+[lindex $br 2]+[lindex $bl 2])/4.0}]]
+
+    # North = toward top of card
+    set nx [expr {([lindex $tl 0]+[lindex $tr 0])/2.0 - ([lindex $bl 0]+[lindex $br 0])/2.0}]
+    set ny [expr {([lindex $tl 1]+[lindex $tr 1])/2.0 - ([lindex $bl 1]+[lindex $br 1])/2.0}]
+    set nz [expr {([lindex $tl 2]+[lindex $tr 2])/2.0 - ([lindex $bl 2]+[lindex $br 2])/2.0}]
+    set nLen [expr {sqrt($nx*$nx + $ny*$ny + $nz*$nz)}]
+    set north [list [expr {$nx/$nLen}] [expr {$ny/$nLen}] [expr {$nz/$nLen}]]
+
+    Claim magnet $card has center $center and north $north
+    Wish $card is outlined red
+}
+
+# --- Field lines drawn onto the magnet card (page space) ---
+# No clock time dependency — only re-evaluates when card moves
+When /someone/ wishes /card/ is a magnet &\
+     /card/ has resolved geometry /geom/ {
+
+    dict with geom {}
+
+    set cx [expr {$width / 2.0}]
+    set cy [expr {$height / 2.0}]
+
+    # Draw parametric dipole field lines in page space
+    # Dipole: x = C*sin³(θ), y = C*sin²(θ)*cos(θ)  (north = -Y direction)
+    set pi 3.14159265
+    foreach C {0.5 1.0} {
+        foreach side {1 -1} {
+            set pts {}
+            set nSteps 20
+            for {set i 0} {$i <= $nSteps} {incr i} {
+                set theta [expr {$pi * 0.05 + $pi * 0.9 * $i / double($nSteps)}]
+                set sinT [expr {sin($theta)}]
+                set cosT [expr {cos($theta)}]
+
+                # Parametric dipole in normalized coords
+                set fx [expr {$C * $sinT * $sinT * $sinT * $side}]
+                set fy [expr {-$C * $sinT * $sinT * $cosT}]
+
+                # Scale to card page space
+                set px [expr {$cx + $fx * $width * 0.45}]
+                set py [expr {$cy + $fy * $height * 0.45}]
+
+                # Clamp to card bounds
+                #if {$px < 0} { set px 0 }
+                #if {$px > $width} { set px $width }
+                #if {$py < 0} { set py 0 }
+                #if {$py > $height} { set py $height }
+
+                lappend pts [list $px $py]
+            }
+
+            Wish to draw a line onto $card with \
+                points $pts width 0.0008 color {0.4 0.4 1.0 0.5}
+        }
+    }
+}
+
+# --- Iron card: grid of atoms that align with magnetic field ---
+# No clock time dependency — re-evaluates when quad or magnet claims change
+When /someone/ wishes /card/ has iron atoms &\
+     tag /card/ has quad /quad/ &\
+     /card/ has resolved geometry /geom/ &\
+     the quad library is /quadLib/ {
+
+    dict with geom {}
+
+    # Iron card's local axes (camera space, normalized)
+    lassign [$quadLib vertices $quad] stl str sbr sbl
+    set cXx [expr {[lindex $str 0]-[lindex $stl 0]}]
+    set cXy [expr {[lindex $str 1]-[lindex $stl 1]}]
+    set cXz [expr {[lindex $str 2]-[lindex $stl 2]}]
+    set cXlen [expr {sqrt($cXx*$cXx+$cXy*$cXy+$cXz*$cXz)}]
+    set cXx [expr {$cXx/$cXlen}]; set cXy [expr {$cXy/$cXlen}]; set cXz [expr {$cXz/$cXlen}]
+
+    set cYx [expr {[lindex $sbl 0]-[lindex $stl 0]}]
+    set cYy [expr {[lindex $sbl 1]-[lindex $stl 1]}]
+    set cYz [expr {[lindex $sbl 2]-[lindex $stl 2]}]
+    set cYlen [expr {sqrt($cYx*$cYx+$cYy*$cYy+$cYz*$cYz)}]
+    set cYx [expr {$cYx/$cYlen}]; set cYy [expr {$cYy/$cYlen}]; set cYz [expr {$cYz/$cYlen}]
+
+    # Iron card center in camera space
+    set ironCx [expr {([lindex $stl 0]+[lindex $str 0]+[lindex $sbr 0]+[lindex $sbl 0])/4.0}]
+    set ironCy [expr {([lindex $stl 1]+[lindex $str 1]+[lindex $sbr 1]+[lindex $sbl 1])/4.0}]
+    set ironCz [expr {([lindex $stl 2]+[lindex $str 2]+[lindex $sbr 2]+[lindex $sbl 2])/4.0}]
+
+    # Get all magnets and precompute their positions in iron card's local 2D frame
+    set magnets [Query! magnet /m/ has center /c/ and north /n/]
+    set localMagnets {}
+    foreach mag $magnets {
+        lassign [dict get $mag c] mcx mcy mcz
+        lassign [dict get $mag n] mnx mny mnz
+
+        # Magnet center in iron card's local coords
+        set rx [expr {$mcx - $ironCx}]
+        set ry [expr {$mcy - $ironCy}]
+        set rz [expr {$mcz - $ironCz}]
+        set mlx [expr {$rx*$cXx + $ry*$cXy + $rz*$cXz}]
+        set mly [expr {$rx*$cYx + $ry*$cYy + $rz*$cYz}]
+
+        # Magnet north in iron card's local coords
+        set mnlx [expr {$mnx*$cXx + $mny*$cXy + $mnz*$cXz}]
+        set mnly [expr {$mnx*$cYx + $mny*$cYy + $mnz*$cYz}]
+        set mnll [expr {sqrt($mnlx*$mnlx + $mnly*$mnly)}]
+        if {$mnll > 0.001} {
+            set mnlx [expr {$mnlx/$mnll}]; set mnly [expr {$mnly/$mnll}]
+        }
+
+        lappend localMagnets [list $mlx $mly $mnlx $mnly]
+    }
+
+    # Atom grid
+    set cols 8
+    set rows 7
+    set marginX [expr {$width * 0.08}]
+    set marginY [expr {$height * 0.08}]
+    set atomLen 0.01
+
+    for {set r 0} {$r < $rows} {incr r} {
+        for {set c 0} {$c < $cols} {incr c} {
+            # Atom position in page space
+            set ax [expr {$marginX + ($width - 2*$marginX) * $c / ($cols - 1.0)}]
+            set ay [expr {$marginY + ($height - 2*$marginY) * $r / ($rows - 1.0)}]
+
+            # Atom position in local coords (relative to card center, meters)
+            set alx [expr {$ax - $width / 2.0}]
+            set aly [expr {$ay - $height / 2.0}]
+
+            # Accumulate magnetic field from all magnets (2D dipole)
+            set bx 0.0
+            set by 0.0
+            foreach mag $localMagnets {
+                lassign $mag mlx mly mnlx mnly
+
+                set dx [expr {$alx - $mlx}]
+                set dy [expr {$aly - $mly}]
+                set r2 [expr {$dx*$dx + $dy*$dy}]
+                set dist [expr {sqrt($r2)}]
+
+                if {$dist < 0.02} { set dist 0.02; set r2 [expr {$dist*$dist}] }
+
+                set rx [expr {$dx / $dist}]
+                set ry [expr {$dy / $dist}]
+                set mDotR [expr {$mnlx*$rx + $mnly*$ry}]
+                set r3 [expr {$r2 * $dist}]
+
+                set bx [expr {$bx + (3.0*$mDotR*$rx - $mnlx) / $r3}]
+                set by [expr {$by + (3.0*$mDotR*$ry - $mnly) / $r3}]
+            }
+
+            # If no significant field, use deterministic random direction
+            set bLen [expr {sqrt($bx*$bx + $by*$by)}]
+            if {$bLen < 0.1} {
+                set seed [expr {$r * 31 + $c * 17 + 42}]
+                set angle [expr {fmod($seed * 2.654435769, 6.28318530718)}]
+                # Blend between random and field based on field strength
+                set blend [expr {$bLen / 0.1}]
+                set randX [expr {cos($angle)}]
+                set randY [expr {sin($angle)}]
+                set bx [expr {$bx + $randX * (1.0 - $blend)}]
+                set by [expr {$by + $randY * (1.0 - $blend)}]
+                set bLen [expr {sqrt($bx*$bx + $by*$by)}]
+            }
+            if {$bLen < 0.001} { set bLen 1.0 }
+
+            # Normalize and draw atom as two halves: red tip (north) + silver tail
+            set dirX [expr {$bx / $bLen}]
+            set dirY [expr {$by / $bLen}]
+            set half [expr {$atomLen / 2.0}]
+
+            # Red half: center to north tip (along field direction)
+            Wish to draw a line onto $card with \
+                points [list \
+                    [list $ax $ay] \
+                    [list [expr {$ax + $half*$dirX}] [expr {$ay + $half*$dirY}]]] \
+                width 0.003 color {0.9 0.15 0.1 1.0}
+
+            # Silver half: center to south tail (against field)
+            Wish to draw a line onto $card with \
+                points [list \
+                    [list $ax $ay] \
+                    [list [expr {$ax - $half*$dirX}] [expr {$ay - $half*$dirY}]]] \
+                width 0.003 color {0.8 0.8 0.85 1.0}
+        }
+    }
+
+    Wish $card is outlined white
+}

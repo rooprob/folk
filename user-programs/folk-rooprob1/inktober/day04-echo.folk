@@ -1,0 +1,264 @@
+# Day 04: Echo
+# Sonar ripples expand from a card and echo off other cards on the table.
+# Primary ripples are warm-colored; echoes bounce back in complementary colors.
+#
+# Enable: Place a card with "Wish $this echoes sonar"
+
+set this day04-echo
+
+# Tuning
+set rippleSpeed 400.0     ;# pixels per second
+set rippleInterval 600    ;# ms between new primary ripples
+set maxRippleLife 3000    ;# ms before primary ripple fades
+set maxEchoLife 2000      ;# ms before echo ripple fades
+set maxRipples 20         ;# cap to avoid work queue overflow
+
+# Convert HSV to RGB (H: 0-360, S: 0-1, V: 0-1) -> {r g b a}
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}
+
+# Compute screen center and 3D camera-space center for each visible tag
+When /tagId/ has quad /quad/ &\
+     the quad library is /quadLib/ &\
+     the quad changer is /quadChange/ &\
+     display /disp/ has intrinsics /intrinsics/ &\
+     display /disp/ has width /w/ height /h/ &\
+     the pose library is /poseLib/ {
+
+    fn quadChange
+
+    # 3D center in camera space (meters)
+    lassign [$quadLib vertices $quad] ctl ctr cbr cbl
+    set cam3d [list \
+        [expr {([lindex $ctl 0]+[lindex $ctr 0]+[lindex $cbr 0]+[lindex $cbl 0])/4.0}] \
+        [expr {([lindex $ctl 1]+[lindex $ctr 1]+[lindex $cbr 1]+[lindex $cbl 1])/4.0}] \
+        [expr {([lindex $ctl 2]+[lindex $ctr 2]+[lindex $cbr 2]+[lindex $cbl 2])/4.0}]]
+    Claim tag $tagId has camera center $cam3d
+
+    # Screen center (2D pixels)
+    set displayQuad [quadChange $quad "display $disp"]
+    lassign [$quadLib vertices $displayQuad] tl tr br bl
+    set cx [expr {([lindex $tl 0]+[lindex $tr 0]+[lindex $br 0]+[lindex $bl 0])/4.0}]
+    set cy [expr {([lindex $tl 1]+[lindex $tr 1]+[lindex $br 1]+[lindex $bl 1])/4.0}]
+    set cz [expr {([lindex $tl 2]+[lindex $tr 2]+[lindex $br 2]+[lindex $bl 2])/4.0}]
+    set screenPos [$poseLib project $intrinsics $w $h [list $cx $cy $cz]]
+    Claim tag $tagId has screen center $screenPos
+}
+
+# Main sonar loop
+When /someone/ wishes /card/ echoes sonar &\
+     the clock time is /clockTime/ &\
+     tag /card/ has screen center /sourcePos/ &\
+     tag /card/ has quad /srcQuad/ &\
+     /card/ has resolved geometry /geom/ &\
+     the quad library is /quadLib/ &\
+     display /disp/ has width /w/ height /h/ {
+
+    set now [clock milliseconds]
+    lassign $sourcePos srcX srcY
+
+    # Get existing ripple state
+    set results [Query! echo sonar has state /s/]
+    if {[llength $results] > 0} {
+        set state [dict get [lindex $results 0] s]
+    } else {
+        set state [dict create ripples {} lastEmit 0]
+    }
+
+    set ripples [dict get $state ripples]
+    set lastEmit [dict get $state lastEmit]
+
+    # Emit a new primary ripple periodically
+    if {$now - $lastEmit >= $rippleInterval} {
+        lappend ripples [dict create \
+            cx $srcX cy $srcY \
+            spawnTime $now \
+            isEcho false \
+            hue [expr {fmod($now / 15.0, 360)}] \
+            hitTags {}]
+        set lastEmit $now
+    }
+
+    # Get all card screen centers for echo detection
+    set targets [Query! tag /t/ has screen center /pos/]
+
+    # Process ripples: update, detect echoes, cull expired
+    set kept {}
+    foreach ripple $ripples {
+        set age [expr {$now - [dict get $ripple spawnTime]}]
+        set isEcho [dict get $ripple isEcho]
+        set life [expr {$isEcho ? $maxEchoLife : $maxRippleLife}]
+        if {$age > $life} continue
+
+        set radius [expr {$rippleSpeed * $age / 1000.0}]
+
+        # Check if this primary ripple just reached any target card
+        if {!$isEcho && [llength $kept] < $maxRipples} {
+            set hitTags [dict get $ripple hitTags]
+            set rcx [dict get $ripple cx]
+            set rcy [dict get $ripple cy]
+            set hue [dict get $ripple hue]
+
+            foreach target $targets {
+                set tid [dict get $target t]
+                if {$tid == $card} continue
+
+                # Skip if already echoed off this tag
+                if {[lsearch -exact $hitTags $tid] >= 0} continue
+
+                lassign [dict get $target pos] tx ty
+                set dist [expr {sqrt(($tx-$rcx)*($tx-$rcx) + ($ty-$rcy)*($ty-$rcy))}]
+
+                if {$radius >= $dist} {
+                    lappend hitTags $tid
+
+                    # Spawn echo ripple from target card
+                    lappend kept [dict create \
+                        cx $tx cy $ty \
+                        spawnTime $now \
+                        isEcho true \
+                        hue [expr {fmod($hue + 180, 360)}] \
+                        hitTags {}]
+                }
+            }
+
+            dict set ripple hitTags $hitTags
+        }
+
+        lappend kept $ripple
+    }
+
+    # Cap total ripples
+    if {[llength $kept] > $maxRipples} {
+        set kept [lrange $kept end-[expr {$maxRipples-1}] end]
+    }
+
+    # Draw all ripples
+    foreach ripple $kept {
+        set age [expr {$now - [dict get $ripple spawnTime]}]
+        set isEcho [dict get $ripple isEcho]
+        set life [expr {$isEcho ? $maxEchoLife : $maxRippleLife}]
+        set radius [expr {$rippleSpeed * $age / 1000.0}]
+        set alpha [expr {(1.0 - double($age) / $life) * ($isEcho ? 0.5 : 0.9)}]
+        set hue [dict get $ripple hue]
+
+        set color [hsvToRgb $hue 1.0 1.0 $alpha]
+        set thickness [expr {$isEcho ? 1.5 : 3.0}]
+
+        Wish to draw a circle onto $disp with \
+            center [list [dict get $ripple cx] [dict get $ripple cy]] \
+            radius $radius \
+            thickness $thickness \
+            color $color \
+            filled false
+    }
+
+    # --- Arrow + bearing/distance on the card (page space) ---
+    dict with geom {}
+
+    # Card's local axes from camera-space quad (for bearing computation)
+    lassign [$quadLib vertices $srcQuad] stl str sbr sbl
+    # Card X axis (left to right)
+    set cXx [expr {[lindex $str 0] - [lindex $stl 0]}]
+    set cXy [expr {[lindex $str 1] - [lindex $stl 1]}]
+    set cXz [expr {[lindex $str 2] - [lindex $stl 2]}]
+    set cXlen [expr {sqrt($cXx*$cXx + $cXy*$cXy + $cXz*$cXz)}]
+    set cXx [expr {$cXx/$cXlen}]; set cXy [expr {$cXy/$cXlen}]; set cXz [expr {$cXz/$cXlen}]
+    # Card Y axis (top to bottom)
+    set cYx [expr {[lindex $sbl 0] - [lindex $stl 0]}]
+    set cYy [expr {[lindex $sbl 1] - [lindex $stl 1]}]
+    set cYz [expr {[lindex $sbl 2] - [lindex $stl 2]}]
+    set cYlen [expr {sqrt($cYx*$cYx + $cYy*$cYy + $cYz*$cYz)}]
+    set cYx [expr {$cYx/$cYlen}]; set cYy [expr {$cYy/$cYlen}]; set cYz [expr {$cYz/$cYlen}]
+
+    # Source 3D center in camera space
+    set srcCx [expr {([lindex $stl 0]+[lindex $str 0]+[lindex $sbr 0]+[lindex $sbl 0])/4.0}]
+    set srcCy [expr {([lindex $stl 1]+[lindex $str 1]+[lindex $sbr 1]+[lindex $sbl 1])/4.0}]
+    set srcCz [expr {([lindex $stl 2]+[lindex $str 2]+[lindex $sbr 2]+[lindex $sbl 2])/4.0}]
+
+    # Draw arrow pointing "up" on the card (page space, from center toward top)
+    set arrowCx [expr {$width / 2.0}]
+    set arrowCy [expr {$height / 2.0}]
+    set arrowLen [expr {$height * 0.25}]
+    set tipX $arrowCx
+    set tipY [expr {$arrowCy - $arrowLen}]
+    set baseY [expr {$arrowCy + $arrowLen * 0.2}]
+    # Shaft
+    Wish to draw a line onto $card with \
+        points [list [list $arrowCx $baseY] [list $tipX $tipY]] \
+        width 0.004 color white
+    # Arrowhead
+    set hs [expr {$arrowLen * 0.25}]
+    Wish to draw a line onto $card with \
+        points [list \
+            [list [expr {$tipX - $hs * 0.5}] [expr {$tipY + $hs}]] \
+            [list $tipX $tipY] \
+            [list [expr {$tipX + $hs * 0.5}] [expr {$tipY + $hs}]]] \
+        width 0.003 color white
+
+    # Collect which tags have been hit by any active primary ripple
+    set hitSet {}
+    foreach ripple $kept {
+        if {![dict get $ripple isEcho]} {
+            foreach tid [dict get $ripple hitTags] {
+                dict set hitSet $tid 1
+            }
+        }
+    }
+
+    # Get all 3D centers for metric distance
+    set camCenters [Query! tag /t/ has camera center /c/]
+    set camMap {}
+    foreach entry $camCenters {
+        dict set camMap [dict get $entry t] [dict get $entry c]
+    }
+
+    # Label only targets the sonar has reached, with metric distance + card-relative bearing
+    set lines {}
+    foreach target $targets {
+        set tid [dict get $target t]
+        if {$tid == $card} continue
+        if {![dict exists $hitSet $tid]} continue
+        if {![dict exists $camMap $tid]} continue
+
+        # 3D direction from source to target (camera space, meters)
+        lassign [dict get $camMap $tid] tcx tcy tcz
+        set dx [expr {$tcx - $srcCx}]
+        set dy [expr {$tcy - $srcCy}]
+        set dz [expr {$tcz - $srcCz}]
+        set distMeters [expr {sqrt($dx*$dx + $dy*$dy + $dz*$dz)}]
+
+        # Project direction onto card's local axes
+        set projX [expr {$dx*$cXx + $dy*$cXy + $dz*$cXz}]
+        set projY [expr {$dx*$cYx + $dy*$cYy + $dz*$cYz}]
+        # Bearing from card "up" (-Y), clockwise
+        set bearing [expr {fmod(atan2($projX, -$projY) * 180.0 / 3.14159265 + 360, 360)}]
+
+        lappend lines [format "tag %s: %.2fm  %03.0f°" $tid $distMeters $bearing]
+    }
+    if {[llength $lines] > 0} {
+        Wish $card is labelled [join $lines "\n"]
+    }
+
+    # Persist state
+    set state [dict create ripples $kept lastEmit $lastEmit]
+    Hold! -keep 500ms -key echo-sonar \
+        Claim echo sonar has state $state
+}

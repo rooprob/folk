@@ -1,0 +1,191 @@
+# Day 03: Tilt Ball
+# A ball rolls around on a card based on how you tilt it.
+# The card's 3D AprilTag orientation determines gravity direction on the surface.
+# Ball bounces off the card edges (drawn as an outline).
+#
+# Enable: Place a card with "Wish $this has tilt ball"
+
+set this day03-tilt-ball
+
+# Convert HSV to RGB (H: 0-360, S: 0-1, V: 0-1) -> {r g b a}
+fn hsvToRgb {h s v {a 1.0}} {
+    set h [expr {$h / 60.0}]
+    set c [expr {$v * $s}]
+    set x [expr {$c * (1 - abs(fmod($h, 2) - 1))}]
+    set m [expr {$v - $c}]
+
+    set hi [expr {int($h) % 6}]
+    switch $hi {
+        0 { set rgb [list $c $x 0] }
+        1 { set rgb [list $x $c 0] }
+        2 { set rgb [list 0 $c $x] }
+        3 { set rgb [list 0 $x $c] }
+        4 { set rgb [list $x 0 $c] }
+        5 { set rgb [list $c 0 $x] }
+    }
+
+    lassign $rgb r g b
+    return [list [expr {$r + $m}] [expr {$g + $m}] [expr {$b + $m}] $a]
+}
+
+# Rainbow outline: cycles hue over time
+# Enable: Place a card with "Wish $this is outlined in rainbow"
+When /someone/ wishes /thing/ is outlined in rainbow &\
+     /thing/ has resolved geometry /geom/ &\
+     the clock time is /clockTime/ {
+    dict with geom {
+        set points [list [list 0 0] \
+                        [list $width 0] \
+                        [list $width $height] \
+                        [list 0 $height] \
+                        [list 0 0]]
+    }
+
+    set hue [expr {fmod([clock milliseconds] / 10.0, 360)}]
+    set color [hsvToRgb $hue 1.0 1.0]
+
+    Wish to draw a line onto $thing with \
+        points $points width 0.01 color $color
+}
+
+# Physics constants (tune for feel)
+set gravityStrength 3.0   ;# gravity magnitude (m/s²)
+set friction 0.97         ;# velocity damping per frame
+set bounceDamp 0.5        ;# energy retained on bounce
+set ballRadiusFrac 0.06   ;# ball radius as fraction of card width
+
+When /someone/ wishes /card/ has tilt ball &\
+     the clock time is /clockTime/ &\
+     tag /card/ has quad /quad/ &\
+     /card/ has resolved geometry /geom/ &\
+     the quad library is /quadLib/ {
+
+    dict with geom {}
+
+    set ballRadius [expr {$width * $ballRadiusFrac}]
+
+    # --- Compute tilt from 3D quad vertices (camera space) ---
+    lassign [$quadLib vertices $quad] tl tr br bl
+
+    # Card X-axis in 3D (topLeft -> topRight)
+    set cXx [expr {[lindex $tr 0] - [lindex $tl 0]}]
+    set cXy [expr {[lindex $tr 1] - [lindex $tl 1]}]
+    set cXz [expr {[lindex $tr 2] - [lindex $tl 2]}]
+    set cXlen [expr {sqrt($cXx*$cXx + $cXy*$cXy + $cXz*$cXz)}]
+
+    # Card Y-axis in 3D (topLeft -> bottomLeft)
+    set cYx [expr {[lindex $bl 0] - [lindex $tl 0]}]
+    set cYy [expr {[lindex $bl 1] - [lindex $tl 1]}]
+    set cYz [expr {[lindex $bl 2] - [lindex $tl 2]}]
+    set cYlen [expr {sqrt($cYx*$cYx + $cYy*$cYy + $cYz*$cYz)}]
+
+    if {$cXlen < 0.001 || $cYlen < 0.001} return
+
+    # Normalize card axes
+    set cXx [expr {$cXx / $cXlen}]
+    set cXy [expr {$cXy / $cXlen}]
+    set cXz [expr {$cXz / $cXlen}]
+    set cYx [expr {$cYx / $cYlen}]
+    set cYy [expr {$cYy / $cYlen}]
+    set cYz [expr {$cYz / $cYlen}]
+
+    # Surface normal = cardX × cardY
+    set nx [expr {$cXy * $cYz - $cXz * $cYy}]
+    set ny [expr {$cXz * $cYx - $cXx * $cYz}]
+    set nz [expr {$cXx * $cYy - $cXy * $cYx}]
+    set nLen [expr {sqrt($nx*$nx + $ny*$ny + $nz*$nz)}]
+    if {$nLen < 0.001} return
+    set nx [expr {$nx / $nLen}]
+    set ny [expr {$ny / $nLen}]
+    set nz [expr {$nz / $nLen}]
+
+    # --- Get/update ball state ---
+    set now [clock milliseconds]
+    set results [Query! tilt ball $card has state /s/]
+    if {[llength $results] > 0} {
+        set state [dict get [lindex $results 0] s]
+        if {![dict exists $state refNx]} {
+            dict set state refNx $nx
+            dict set state refNy $ny
+            dict set state refNz $nz
+        }
+    } else {
+        # First frame: capture current normal as "flat" reference (= gravity direction)
+        # This calibrates gravity to the table surface, not the camera axis
+        set state [dict create \
+            bx [expr {$width / 2.0}] \
+            by [expr {$height / 2.0}] \
+            vx 0.0 vy 0.0 \
+            lastTime $now \
+            refNx $nx refNy $ny refNz $nz]
+    }
+
+    dict with state {}
+
+    # Gravity = reference normal (captured when card was flat on table)
+    set gx [expr {$gravityStrength * $refNx}]
+    set gy [expr {$gravityStrength * $refNy}]
+    set gz [expr {$gravityStrength * $refNz}]
+
+    # Project gravity onto current (tilted) card surface:
+    # g_surface = gravity - (gravity · normal) * normal
+    set gDotN [expr {$gx*$nx + $gy*$ny + $gz*$nz}]
+    set gsx [expr {$gx - $gDotN * $nx}]
+    set gsy [expr {$gy - $gDotN * $ny}]
+    set gsz [expr {$gz - $gDotN * $nz}]
+
+    # Project surface gravity onto card local axes -> acceleration in page space
+    set ax [expr {$gsx*$cXx + $gsy*$cXy + $gsz*$cXz}]
+    set ay [expr {$gsx*$cYx + $gsy*$cYy + $gsz*$cYz}]
+
+    # Timestep (capped for stability)
+    set dt [expr {($now - $lastTime) / 1000.0}]
+    if {$dt > 0.1 || $dt < 0.001} { set dt 0.016 }
+
+    # Update velocity (acceleration + friction)
+    set vx [expr {($vx + $ax * $dt) * $friction}]
+    set vy [expr {($vy + $ay * $dt) * $friction}]
+
+    # Update position
+    set bx [expr {$bx + $vx * $dt}]
+    set by [expr {$by + $vy * $dt}]
+
+    # Bounce off card boundaries
+    set minX $ballRadius
+    set maxX [expr {$width - $ballRadius}]
+    set minY $ballRadius
+    set maxY [expr {$height - $ballRadius}]
+
+    if {$bx < $minX} { set bx $minX; set vx [expr {abs($vx) * $bounceDamp}] }
+    if {$bx > $maxX} { set bx $maxX; set vx [expr {-abs($vx) * $bounceDamp}] }
+    if {$by < $minY} { set by $minY; set vy [expr {abs($vy) * $bounceDamp}] }
+    if {$by > $maxY} { set by $maxY; set vy [expr {-abs($vy) * $bounceDamp}] }
+
+    # Save state (single Hold! per card) — include reference normal!
+    set state [dict create bx $bx by $by vx $vx vy $vy lastTime $now \
+        refNx $refNx refNy $refNy refNz $refNz]
+
+    Hold! -keep 500ms -key [list tilt-ball $card] \
+        Claim tilt ball $card has state $state
+
+    # --- Draw onto the card (page space, in meters) ---
+
+    # Boundary outline
+    set pad 0.003
+    set borderPoints [list \
+        [list $pad $pad] \
+        [list [expr {$width - $pad}] $pad] \
+        [list [expr {$width - $pad}] [expr {$height - $pad}]] \
+        [list $pad [expr {$height - $pad}]] \
+        [list $pad $pad]]
+    Wish to draw a line onto $card with \
+        points $borderPoints width 0.003 color white
+
+    # Ball
+    Wish to draw a circle onto $card with \
+        center [list $bx $by] \
+        radius $ballRadius \
+        thickness 0 \
+        color {1.0 0.3 0.2 1.0} \
+        filled true
+}
