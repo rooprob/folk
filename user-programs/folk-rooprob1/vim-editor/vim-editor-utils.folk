@@ -10,11 +10,28 @@ set vimUtilsLib [library create vimUtilsLib {
         set nlines [llength $lines]
 
         switch $key {
-            zero {
-                set newCursor [{*}$utils xyToCursor $code 0 $cy]
-                return [list $newCursor 0]
+            h {
+                set newCursor [max 0 [- $cursor 1]]
+                lassign [{*}$utils cursorToXy $code $newCursor] newX _
+                return [list $newCursor $newX]
             }
-            asciicircum {
+            l {
+                set codeLen [string length $code]
+                set newCursor [min $codeLen [+ $cursor 1]]
+                lassign [{*}$utils cursorToXy $code $newCursor] newX _
+                return [list $newCursor $newX]
+            }
+            j {
+                set newCursor [{*}$utils xyToCursor $code $maxCursorX [+ $cy 1]]
+                lassign [{*}$utils cursorToXy $code $newCursor] newX _
+                return [list $newCursor $newX]
+            }
+            k {
+                set newCursor [{*}$utils xyToCursor $code $maxCursorX [- $cy 1]]
+                lassign [{*}$utils cursorToXy $code $newCursor] newX _
+                return [list $newCursor $newX]
+            }
+            zero - asciicircum {
                 set newCursor [{*}$utils xyToCursor $code 0 $cy]
                 return [list $newCursor 0]
             }
@@ -22,6 +39,11 @@ set vimUtilsLib [library create vimUtilsLib {
                 set lineLen [string length [lindex $lines $cy]]
                 set newCursor [{*}$utils xyToCursor $code $lineLen $cy]
                 return [list $newCursor $lineLen]
+            }
+            G {
+                set newCursor [string length $code]
+                lassign [{*}$utils cursorToXy $code $newCursor] newX _
+                return [list $newCursor $newX]
             }
             w {
                 set line [lindex $lines $cy]

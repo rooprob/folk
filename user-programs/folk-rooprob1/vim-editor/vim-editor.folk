@@ -81,8 +81,6 @@ When /editor/ is a vim-editor with /...options/ {
     # HACK: because we partial match
     if {![info exists options]} { return }
 
-    puts "is a vim-editor with options"
-
     Wish tag $editor is stabilized
 
     # Select which program the editor is viewing
@@ -111,7 +109,6 @@ When /editor/ is a vim-editor with /...options/ {
 
     # Load in defaults for the editor if it hasn't been initialized
     set results [Query! /somebody/ claims editor $editor has cursor /anything/]
-    puts "editor: $editor hold is $results"
     if {[llength $results] == 0} {
         Hold! -key editor-state-of:$editor {
             Claim editor $editor has cursor 0
@@ -155,7 +152,7 @@ Subscribe: keyboard /keyboard/ claims key Control_b is down with /...options/ {
     Notify: print code "# vim blank"
 }
 
-When /keyboard/ is a vim keyboard with path /kbPath/ &\
+When /keyboard/ is a vim keyboard with path /anything/ &\
      /keyboard/ is typing into vim-editor /editor/ &\
      /editor/ is a vim-editor with /...anything/ &\
      editor /editor/ has selected program /program/ {
@@ -218,24 +215,68 @@ When /keyboard/ is a vim keyboard with path /kbPath/ &\
             } elseif {$vimMode eq "normal"} {
                 # ---- NORMAL MODE ----
                 if {[llength $vimOp] > 0} {
-                    # Pending operator (d/c/y): next key is a motion
                     set pendingOp [lindex $vimOp 0]
-                    set motion [$vimUtils motionTarget $utils $code $cursor $maxCursorX $key]
-                    if {$motion ne ""} {
-                        lassign $motion targetCursor targetMaxX
+                    if {$key eq "Escape"} {
+                        set vimOp {}
+                    } elseif {$key eq $pendingOp} {
+                        # Double operator (dd/cc/yy): operate on current line
+                        lassign [$utils cursorToXy $code $cursor] cx cy
+                        set lines [split $code "\n"]
+                        set nlines [llength $lines]
+                        set lineLen [string length [lindex $lines $cy]]
+                        set lineStart [$utils xyToCursor $code 0 $cy]
                         lappend undoStack [list $origCode $origCursor $origMaxCursorX]
-                        if {[llength $undoStack] > 50} {
-                            set undoStack [lrange $undoStack end-49 end]
+                        if {[llength $undoStack] > 50} { set undoStack [lrange $undoStack end-49 end] }
+                        switch $pendingOp {
+                            d {
+                                if {$nlines == 1} {
+                                    lassign [$utils replaceRange $code 0 $lineLen ""] code cursor maxCursorX
+                                } elseif {$cy == $nlines - 1} {
+                                    # Last line: remove preceding newline too
+                                    lassign [$utils replaceRange $code [- $lineStart 1] [+ $lineStart $lineLen] ""] code cursor maxCursorX
+                                } else {
+                                    # Include trailing newline
+                                    lassign [$utils replaceRange $code $lineStart [+ $lineStart $lineLen 1] ""] code cursor maxCursorX
+                                }
+                            }
+                            c {
+                                # Delete line content, stay on blank line, enter insert
+                                lassign [$utils replaceRange $code $lineStart [+ $lineStart $lineLen] ""] code cursor maxCursorX
+                                set vimMode insert
+                            }
+                            y {
+                                Hold! -key clipboard-of:$editor \
+                                    Claim editor $editor has clipboard "[lindex $lines $cy]\n"
+                            }
                         }
-                        set start [min $cursor $targetCursor]
-                        set end   [max $cursor $targetCursor]
-                        lassign [$utils replaceRange $code $start $end ""] \
-                            code cursor maxCursorX
-                        if {$pendingOp eq "c"} { set vimMode insert }
                         set redoStack {}
                         set lastEditType other
+                        set vimOp {}
+                    } else {
+                        # Next key is a motion
+                        set motion [$vimUtils motionTarget $utils $code $cursor $maxCursorX $key]
+                        if {$motion ne ""} {
+                            lassign $motion targetCursor targetMaxX
+                            set start [min $cursor $targetCursor]
+                            set end   [max $cursor $targetCursor]
+                            if {$pendingOp eq "y"} {
+                                # Yank: copy range to clipboard, don't modify code
+                                Hold! -key clipboard-of:$editor \
+                                    Claim editor $editor has clipboard [$utils getSelectedText $code $start $end]
+                            } else {
+                                lappend undoStack [list $origCode $origCursor $origMaxCursorX]
+                                if {[llength $undoStack] > 50} {
+                                    set undoStack [lrange $undoStack end-49 end]
+                                }
+                                lassign [$utils replaceRange $code $start $end ""] \
+                                    code cursor maxCursorX
+                                if {$pendingOp eq "c"} { set vimMode insert }
+                                set redoStack {}
+                                set lastEditType other
+                            }
+                        }
+                        set vimOp {}
                     }
-                    if {$key ne "Escape"} { set vimOp {} }
                 } else {
                     switch $key {
                         h { lassign [$utils handleNavigation Left  $code $cursor $maxCursorX] cursor maxCursorX }
@@ -292,6 +333,54 @@ When /keyboard/ is a vim keyboard with path /kbPath/ &\
                             }
                         }
                         d - c - y { set vimOp [list $key] }
+                        p {
+                            if {$clipboard ne ""} {
+                                lappend undoStack [list $origCode $origCursor $origMaxCursorX]
+                                if {[llength $undoStack] > 50} { set undoStack [lrange $undoStack end-49 end] }
+                                if {[string index $clipboard end] eq "\n"} {
+                                    # Line paste: insert new line below current line
+                                    lassign [$utils cursorToXy $code $cursor] cx cy
+                                    set lines [split $code "\n"]
+                                    set lineEnd [$utils xyToCursor $code [string length [lindex $lines $cy]] $cy]
+                                    set yankText [string range $clipboard 0 end-1]
+                                    lassign [$utils replaceRange $code $lineEnd $lineEnd "\n$yankText"] code cursor maxCursorX
+                                    # Place cursor at start of pasted line
+                                    lassign [$utils cursorToXy $code $cursor] cx cy
+                                    set cursor [$utils xyToCursor $code 0 $cy]
+                                    lassign [$utils cursorToXy $code $cursor] maxCursorX _
+                                } else {
+                                    # Char paste: insert after cursor
+                                    set insertPos [min [+ $cursor 1] [string length $code]]
+                                    lassign [$utils replaceRange $code $insertPos $insertPos $clipboard] code cursor maxCursorX
+                                    set cursor [- $cursor 1]
+                                    lassign [$utils cursorToXy $code $cursor] maxCursorX _
+                                }
+                                set redoStack {}
+                                set lastEditType other
+                            }
+                        }
+                        P {
+                            if {$clipboard ne ""} {
+                                lappend undoStack [list $origCode $origCursor $origMaxCursorX]
+                                if {[llength $undoStack] > 50} { set undoStack [lrange $undoStack end-49 end] }
+                                if {[string index $clipboard end] eq "\n"} {
+                                    # Line paste: insert new line above current line
+                                    lassign [$utils cursorToXy $code $cursor] cx cy
+                                    set lineStart [$utils xyToCursor $code 0 $cy]
+                                    set yankText [string range $clipboard 0 end-1]
+                                    lassign [$utils replaceRange $code $lineStart $lineStart "$yankText\n"] code cursor maxCursorX
+                                    set cursor $lineStart
+                                    lassign [$utils cursorToXy $code $cursor] maxCursorX _
+                                } else {
+                                    # Char paste: insert at cursor
+                                    lassign [$utils replaceRange $code $cursor $cursor $clipboard] code cursor maxCursorX
+                                    set cursor [- $cursor 1]
+                                    lassign [$utils cursorToXy $code $cursor] maxCursorX _
+                                }
+                                set redoStack {}
+                                set lastEditType other
+                            }
+                        }
                         u {
                             if {[llength $undoStack] > 0} {
                                 lappend redoStack [list $code $cursor $maxCursorX]
@@ -494,9 +583,6 @@ When /editor/ is a vim-editor with /...anything/ &\
 When /editor/ is a vim-editor with /...anything/ &\
      editor /editor/ has viewport position /vpPos/ &\
      editor /editor/ has viewport size /vpSize/ &\
-     editor /editor/ has vim mode /vimMode/ &\
-     editor /editor/ has vim op /vimOp/ &\
-     editor /editor/ has vim cmd /vimCmd/ &\
      editor /editor/ has font options with /...fontOptions/ {
     lassign $vpPos vpX vpY
     lassign $vpSize vpWidth vpHeight
@@ -508,7 +594,10 @@ When /editor/ is a vim-editor with /...anything/ &\
          editor buffer for /program/ is /code/ &\
          editor $editor has cursor /cursor/ &\
          editor $editor has cursor position /cursorPos/ &\
-         editor $editor has selection anchor /selAnchor/ {
+         editor $editor has selection anchor /selAnchor/ &\
+         editor $editor has vim mode /vimMode/ &\
+         editor $editor has vim op /vimOp/ &\
+         editor $editor has vim cmd /vimCmd/ {
         set lineCount [min [- [llength [split $code "\n"]] $vpY] $vpHeight]
         set lineNumbers [$utils lineNumberView $vpY $lineCount]
 
@@ -586,8 +675,15 @@ When /editor/ is a vim-editor with /...anything/ &\
                 p2 [list [+ $x0 $advance] [+ $y0 $textScale]] \
                 p3 [list $x0 [+ $y0 $textScale]] \
                 color {0.8 0.8 0.2 0.5} layer -1
-            Wish to draw a circle onto $editor with center $p1 radius $s thickness 0 color yellow filled true
-            Wish to draw a line onto $editor with points [list $p1 $p2] width $s color yellow
+        } elseif {$vimMode eq "command"} {
+            # Block cursor in normal mode (yellow)
+            set x0 [lindex $p1 0]
+            set y0 [lindex $p1 1]
+            Wish to draw a quad onto $editor with \
+                p0 [list $x0 $y0] p1 [list [+ $x0 $advance] $y0] \
+                p2 [list [+ $x0 $advance] [+ $y0 $advance]] \
+                p3 [list $x0 [+ $y0 $advance]] \
+                color {0.8 0.8 0.2 0.5} layer -1
         } else {
             # Bar cursor in insert/command mode (green)
             Wish to draw a circle onto $editor with center $p1 radius $s thickness 0 color green filled true
@@ -601,7 +697,7 @@ When /editor/ is a vim-editor with /...anything/ &\
             set modeStr "--[string toupper $vimMode]--"
             if {[llength $vimOp] > 0} { append modeStr " [lindex $vimOp 0]" }
         }
-        set statusY $([lindex $margin 0] + ($vpHeight - 0.5) * $textScale)
+        set statusY $([lindex $margin 0] + ($vpHeight - 1) * $textScale)
         Wish to draw text onto $editor with \
             position [list [lindex $margin 3] $statusY] \
             text $modeStr \
