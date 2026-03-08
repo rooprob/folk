@@ -1,0 +1,79 @@
+# Vim-specific utilities: word motions operating on the linear cursor model
+
+set vimUtilsLib [library create vimUtilsLib {
+
+    # Returns {newCursor newMaxCursorX} or "" if key is not a vim motion
+    # utils = editorUtilsLib, code = full text, cursor = linear offset
+    proc motionTarget {utils code cursor maxCursorX key} {
+        lassign [{*}$utils cursorToXy $code $cursor] cx cy
+        set lines [split $code "\n"]
+        set nlines [llength $lines]
+
+        switch $key {
+            zero {
+                set newCursor [{*}$utils xyToCursor $code 0 $cy]
+                return [list $newCursor 0]
+            }
+            asciicircum {
+                set newCursor [{*}$utils xyToCursor $code 0 $cy]
+                return [list $newCursor 0]
+            }
+            dollar {
+                set lineLen [string length [lindex $lines $cy]]
+                set newCursor [{*}$utils xyToCursor $code $lineLen $cy]
+                return [list $newCursor $lineLen]
+            }
+            w {
+                set line [lindex $lines $cy]
+                set len [string length $line]
+                set i $cx
+                # skip current word chars
+                while {$i < $len && [regexp {\w} [string index $line $i]]} { incr i }
+                # skip non-word chars (spaces/punct)
+                while {$i < $len && ![regexp {\w} [string index $line $i]]} { incr i }
+                if {$i >= $len && $cy < [expr {$nlines - 1}]} {
+                    incr cy; set i 0
+                }
+                set newCursor [{*}$utils xyToCursor $code $i $cy]
+                return [list $newCursor $i]
+            }
+            b {
+                set line [lindex $lines $cy]
+                set i [expr {$cx - 1}]
+                if {$i < 0 && $cy > 0} {
+                    incr cy -1
+                    set line [lindex $lines $cy]
+                    set i [expr {[string length $line] - 1}]
+                }
+                if {$i < 0} { set i 0 }
+                # skip non-word chars backwards
+                while {$i > 0 && ![regexp {\w} [string index $line $i]]} { incr i -1 }
+                # skip word chars backwards
+                while {$i > 0 && [regexp {\w} [string index $line [expr {$i - 1}]]]} { incr i -1 }
+                set newCursor [{*}$utils xyToCursor $code $i $cy]
+                return [list $newCursor $i]
+            }
+            e {
+                set line [lindex $lines $cy]
+                set len [string length $line]
+                set i $cx
+                if {$i < $len - 1} {
+                    incr i
+                } elseif {$cy < [expr {$nlines - 1}]} {
+                    incr cy; set i 0
+                    set line [lindex $lines $cy]
+                    set len [string length $line]
+                }
+                # skip non-word to find start of next word
+                while {$i < $len - 1 && ![regexp {\w} [string index $line $i]]} { incr i }
+                # advance to end of word
+                while {$i < $len - 1 && [regexp {\w} [string index $line [expr {$i + 1}]]]} { incr i }
+                set newCursor [{*}$utils xyToCursor $code $i $cy]
+                return [list $newCursor $i]
+            }
+        }
+        return ""
+    }
+}]
+
+Claim the vim utils library is $vimUtilsLib
